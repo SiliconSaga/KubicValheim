@@ -1,1 +1,10 @@
 /.idea
+
+# Generated per-instance overlays from scripts/start-server.sh — keep only the
+# curated examples (plain, gitops). Ad-hoc instances aren't committed by accident.
+kustomize/overlays/*/
+!kustomize/overlays/plain/
+!kustomize/overlays/gitops/
+
+# Local docker env with a real password (never commit secrets)
+docker/.env

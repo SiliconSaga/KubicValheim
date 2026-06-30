@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kubicvalheim
+
+resources:
+  # Namespace is included here (not in base) so flavor 2 boots with a bare
+  # `kubectl apply -k kustomize/overlays/plain` — zero extra steps. The gitops
+  # overlay omits it and relies on ArgoCD's CreateNamespace=true instead.
+  - namespace.yaml
+  - ../../base
+  - secret.yaml
+
+patches:
+  - path: instance-patch.yaml
+  # Node ports for the "midgard" instance (game 32456, query 32457).
+  - target:
+      kind: Service
+      name: valheim
+    patch: |-
+      - op: replace
+        path: /spec/ports/0/nodePort
+        value: 32456
+      - op: replace
+        path: /spec/ports/1/nodePort
+        value: 32457

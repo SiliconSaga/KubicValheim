@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valheim-metrics
+  labels:
+    app: valheim
+spec:
+  type: ClusterIP
+  selector:
+    app: valheim
+  ports:
+    - name: huginn
+      protocol: TCP
+      port: 8080
+      targetPort: huginn

@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: valheim-player-lists-cm
+  name: valheim-player-lists
 data:
   # 76561198030942091 = Cervator
   adminlist.txt: |-

@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valheim
+spec:
+  template:
+    spec:
+      containers:
+        - name: valheim-server
+          env:
+            - name: NAME
+              value: KubicValheim
+            - name: WORLD
+              value: Midgard

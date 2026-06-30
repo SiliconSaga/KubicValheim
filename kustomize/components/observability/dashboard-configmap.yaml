@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valheim-dashboard
+  labels:
+    # The kube-prometheus-stack Grafana sidecar auto-imports ConfigMaps with this label.
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: kubicvalheim
+data:
+  valheim.json: |
+    {
+      "title": "Valheim",
+      "uid": "kubicvalheim",
+      "schemaVersion": 39,
+      "editable": true,
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": { "list": [] },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Server Up",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ] } },
+          "targets": [
+            { "expr": "max(up{service=\"valheim-metrics\", namespace=\"kubicvalheim\"})", "refId": "A" }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Players Online",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "targets": [
+            { "expr": "max(valheim_current_player_count{namespace=\"kubicvalheim\"})", "refId": "A" }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "CPU (cores)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "targets": [
+            { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"kubicvalheim\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Memory (working set)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "fieldConfig": { "defaults": { "unit": "bytes" } },
+          "targets": [
+            { "expr": "sum(container_memory_working_set_bytes{namespace=\"kubicvalheim\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" }
+          ]
+        }
+      ]
+    }

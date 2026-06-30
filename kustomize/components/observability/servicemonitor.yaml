@@ -1,0 +1,22 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: valheim
+  labels:
+    # REQUIRED: heimdall's kube-prometheus-stack Prometheus selects ServiceMonitors
+    # by this release label. Without it the target is never scraped.
+    release: heimdall-kube-prometheus
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  selector:
+    matchLabels:
+      app: valheim
+  endpoints:
+    - port: huginn          # named TCP port on the valheim-metrics Service
+      path: /metrics
+      interval: 30s
+  namespaceSelector:
+    # Prometheus-operator ServiceMonitor uses matchNames (namespace-name list),
+    # NOT a label selector. The instance namespace is kubicvalheim (per overlay).
+    matchNames:
+      - kubicvalheim
