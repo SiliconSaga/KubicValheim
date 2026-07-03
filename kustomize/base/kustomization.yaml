@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Core Valheim manifests — the single source of truth shared by ALL flavors.
+# Deliberately omits the Secret: each flavor supplies `valheim-secrets`
+# (plain Secret in overlays/plain, ExternalSecret in components/secrets-openbao)
+# so the pod spec is identical and only the secret SOURCE changes.
+resources:
+  - deployment.yaml
+  - service.yaml
+  - service-metrics.yaml
+  - pvc.yaml
+  - configmap-playerlists.yaml
+
+# `labels` (with includeSelectors) is the modern replacement for the deprecated
+# commonLabels — same effect: stamps metadata + Deployment/Service selectors.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: kubicvalheim
+    includeSelectors: true

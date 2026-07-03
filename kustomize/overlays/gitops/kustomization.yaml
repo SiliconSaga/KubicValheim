@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kubicvalheim
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/observability
+  - ../../components/secrets-openbao
+  # - ../../components/backup   # inert scaffold; enable in Phase 3
+
+patches:
+  # This overlay uses base/service.yaml's default node ports (32456/32457) — no
+  # nodePort patch needed. A SECOND gitops-style instance MUST override the node
+  # ports here (a JSON6902 replace on /spec/ports/{0,1}/nodePort) to avoid a
+  # cluster-wide collision on those NodePorts.
+  #
+  # Per-instance name/world (strategic merge by env name — order-independent;
+  # matches the plain "midgard" example).
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: valheim
+      spec:
+        template:
+          spec:
+            containers:
+              - name: valheim-server
+                env:
+                  - name: NAME
+                    value: KubicValheim
+                  - name: WORLD
+                    value: Midgard

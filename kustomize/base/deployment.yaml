@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valheim
+  labels:
+    app: valheim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valheim
+  template:
+    metadata:
+      labels:
+        app: valheim
+    spec:
+      # Prepare player-list files in the world config dir before the server starts.
+      initContainers:
+        - name: valheim-prep
+          image: busybox:1.36
+          command: ['sh', '-c']
+          args:
+            - |
+              mkdir -p /home/steam/.config/unity3d/IronGate/Valheim;
+              cp /valheim-config/adminlist.txt     /home/steam/.config/unity3d/IronGate/Valheim/adminlist.txt;
+              cp /valheim-config/bannedlist.txt    /home/steam/.config/unity3d/IronGate/Valheim/bannedlist.txt;
+              cp /valheim-config/permittedlist.txt /home/steam/.config/unity3d/IronGate/Valheim/permittedlist.txt;
+          volumeMounts:
+            - name: world-data
+              mountPath: /home/steam/.config/unity3d/IronGate/Valheim
+            - name: player-lists
+              mountPath: /valheim-config
+      containers:
+        - name: valheim-server
+          image: mbround18/valheim:3.6.0
+          resources:
+            requests:
+              cpu: 500m
+              memory: 4Gi
+            limits:
+              memory: 8Gi
+          env:
+            - name: NAME
+              value: KubicValheim          # overlay patches per-instance display name
+            - name: WORLD
+              value: Dedicated             # overlay patches per-instance world name
+            - name: PORT
+              value: "2456"
+            - name: PASSWORD                # >= 5 chars, must not contain the server name
+              valueFrom:
+                secretKeyRef:
+                  name: valheim-secrets
+                  key: serverPass
+            - name: PUBLIC
+              value: "1"                    # REQUIRED for Huginn to collect/report stats
+            - name: HTTP_PORT
+              value: "8080"                 # Huginn HTTP server: /metrics + /status
+            - name: ADDRESS
+              value: "127.0.0.1:2457"       # Huginn query target = game port + 1
+          ports:
+            - name: game
+              containerPort: 2456
+              protocol: UDP
+            - name: query
+              containerPort: 2457
+              protocol: UDP
+            - name: huginn
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: world-data
+              mountPath: /home/steam/.config/unity3d/IronGate/Valheim
+            - name: player-lists
+              mountPath: /valheim-config
+      volumes:
+        - name: world-data
+          persistentVolumeClaim:
+            claimName: valheim-data
+        - name: player-lists
+          projected:
+            sources:
+              - configMap:
+                  name: valheim-player-lists

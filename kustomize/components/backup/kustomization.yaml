@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# SCAFFOLD ONLY — intentionally empty. No backup workload ships in Phase 1.
+# Phase 3 will add an S3-endpoint-agnostic CronJob/sidecar here. Until then,
+# including this component is a no-op so overlays can reference the seam early.
+resources: []

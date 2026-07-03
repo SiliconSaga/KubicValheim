@@ -1,99 +1,59 @@
-## Kubic Valheim
+# KubicValheim
 
-A setup for making [Valheim](https://www.valheimgame.com/) work in a Kubernetes cluster, with extra conveniences around config files (stored in ConfigMaps)
+A modernized, Kustomize-based Valheim dedicated server that runs the **same core three ways** — plain Docker, plain Kubernetes, and Kubernetes-plus-platform-extras (GitOps). One source of truth, data-driven instancing, base observability. This is the reference pattern other game components (Ark, Terasology, Rend) follow.
 
-An eventual goal is to include automatic server hibernation to keep hosting costs down while using [ChatOps](https://docs.stackstorm.com/chatops/chatops.html) for server maintenance tasks (for instance: asking a bot on Discord to please start up server `x` when somebody wants to play there)
+## One core, three flavors
 
-Uses the [Docker image](https://hub.docker.com/r/mbround18/valheim) from https://github.com/mbround18/valheim-docker
+A single Kustomize `base/` (Deployment + UDP NodePort Service + ClusterIP metrics Service + PVC + player-list ConfigMap) is the one source of truth. Each platform extra is an additive Kustomize **component** (`observability`, `secrets-openbao`, `backup`); overlays compose them. The pod spec never changes between flavors — only the *source* of the `valheim-secrets` Secret differs (a plain Secret in flavor 2, an ExternalSecret from OpenBAO in flavor 3).
 
-TODO: Check out https://hub.docker.com/r/lloesche/valheim-server as well - maybe more options/logging? Need some way to get count of players online
+### Flavor 1 — Plain Docker
 
-Is part of the [Kubic game server hosting](https://github.com/Cervator/KubicGameHosting) series started with https://github.com/Cervator/KubicArk and https://github.com/Cervator/KubicTerasology
+For users with no Kubernetes. See [`docker/`](docker/): `cp .env.example .env`, set a password, `docker compose up -d`. Same pinned image and Huginn settings as the k8s flavors.
 
+### Flavor 2 — Plain Kubernetes
 
-## Instructions
+Zero extra tooling — boots with a bare kustomize apply:
 
-Apply the resources to a target Kubernetes cluster with some attention paid to order (config maps and storage before the deployment). Consider using the `apply-server.sh` and `delete.sh` scripts
-
-* `apply-server.sh valheim1` would create a server "valheim1" as configured in this repo
-* `delete.sh valheim1` would then delete the valheim1 resources again
-
-As the exposing of servers happen using a NodePort you need to manually add a firewall rule as well, Google Cloud example:
-
-`gcloud compute firewall-rules create valheim1 --allow udp:31456-31458` would prepare the ports for valheim1
-
-*Note:* There are placeholder passwords in `valheim-secrets.yaml` - you'll want to update these _but only locally where you run `kubectl` from_ - don't check your passwords into Git!
-
-If you're curious what version your Valheim server pod is running try the following: `kubectl logs -n valheim $(kubectl get pods -n valheim -o jsonpath='{.items[0].metadata.name}') | grep "Valheim version" | sed 's/.*Valheim version: //'`
-
-## Configuration files
-
-To easily configure a given Valheim server via Git without touching the server several server config files are included via Kubernetes Config Maps (CMs)
-
-* `adminlist.txt` - contains player entries to make admins automatically
-* `bannedlist.txt` - players to prevent from connecting
-* `permittedlist.txt` - players to allow connecting on a non-public server
-
-One thing you need to configure inside a deployment instead is if you want to run with the Beta release, if one is live on Steam. Add a new environment variable to the normal section like so:
-
-```
-        - name: USE_PUBLIC_BETA
-          value: "1"
+```bash
+kubectl apply -k kustomize/overlays/plain
 ```
 
-### Making changes
+Players connect at `<nodeIP>:32457` (the query port = game port + 1); allow UDP on the chosen node ports (32456-32457 for the example "midgard" instance) on the host firewall. `externalTrafficPolicy: Local` preserves player source IPs.
 
-After initial config and provisioning you can change the CMs either via files or directly, such as via the nice Google Kubernetes Engine dashboard. Then simply delete the server pod (not the deployment) via dashboard or eventually using ChatOps. The persistent volume survives including the installed game server files, so it may not make an appreciable difference to restart the server or blow it up. The deployment will auto-recreate the pod if deleted.
+Additional instances are **data-driven** — one namespace per instance, no copy-paste:
 
-
-## Connecting to your server
-
-Find an IP to one of your cluster nodes (the longer lived the better) by using `kubectl get nodes -o wide`, then add the right port from your server set, for instance `31457` (the "+1" port) for valheim1 `[IP]:[port]` then add that to the Steam server browser. The server generally comes online pretty fast but crashes easily, you can watch it with `kubectl logs <server-name>-<gibberish>` (adjust accordingly to your pod name, seen with `kubectl get pods`)
-
-
-## Taking backups
-
-You can take backups by either snapshotting the disk that's backing the Valheim persistent volume, copying the game files, or both. For instance in a terminal with `kubectl` configured, with the name of the Valheim pod handy, and in a directory you want to download the files to:
-
-* `kubectl cp valheim1-64b954b5b-jmtmc:/home/steam/.config/unity3d/IronGate/Valheim/worlds/Dedicated.db Dedicated.db`
-* `kubectl cp valheim1-64b954b5b-jmtmc:/home/steam/.config/unity3d/IronGate/Valheim/worlds/Dedicated.fwl Dedicated.fwl`
-
-Another approach that's particularly helpful if you are juggling multiple servers and leave some offline and don't want to bring a game world live just to be able to get to the files normally is instead just using a utility pod mapped to just the persistent volume. Example:
-
-```datapod.yml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: my-pod
-spec:
-  containers:
-  - name: my-container
-    image: busybox
-    command:
-      - sleep
-      - "3600"
-    volumeMounts:
-    - name: my-volume
-      mountPath: /valheim1
-  volumes:
-  - name: my-volume
-    persistentVolumeClaim:
-      claimName: valheim1-pv-claim
+```bash
+scripts/start-server.sh asgard 32556 Asgard          # renders kustomize/overlays/asgard (ns valheim-asgard)
+APPLY=1 scripts/start-server.sh asgard 32556 Asgard   # render + apply
 ```
 
-* `kubectl apply -f datapod.yml` - create a pod using the above definition that'll mount the Valheim volume to `/valheim1`
-* `kubectl cp my-pod:/valheim1/worlds/Dedicated.db Dedicated.db` - download the main world file
-* `kubectl cp my-pod:/valheim1/worlds/Dedicated.fwl Dedicated.fwl` - download the other one
-* `zip valheim1-2022-06-17.zip Dedicated.*` - zip them up into a single file
-* `gsutil cp *.zip gs://game-server-backups/valheim/valheim1-2022-06-17` - upload them to a target Google Cloud Storage Bucket (must be created separately first and made public if desired)
-  * This particular command would leave the file publicly available at https://storage.googleapis.com/game-server-backups/valheim/valheim1-2022-06-17.zip
+### Flavor 3 — GitOps (ArgoCD + OpenBAO)
 
-## Restoring backups
+The `kustomize/overlays/gitops` overlay (base + observability + secrets-openbao) is deployed by the nidavellir ArgoCD Application, with the server password sourced from OpenBAO via External Secrets. Observability is built in: metrics scrape into heimdall's Prometheus/Grafana and logs flow to Loki via the cluster-wide OTel Collector. **Test through Git** — change flavor 3 by committing + syncing, never `kubectl edit` (selfHeal reverts it).
 
-You simply need to get the two world files from your desired backkup into the directory they normally live in - noting that for this specific setup the world file names will be "Dedicated" (as that is the designated world of the name as per config here). Have not tried figuring out the _easiest_ way yet to do this in Kubernetes, although the above approach should work in reverse.
+## Layout
 
-Running a game _locally_ can be a little trickier as Valheim runs with worlds saved in the Steam cloud saves system by default, so the local directory may not exist. On a fairly modern instance of Windows the files should be placed at something like `C:\Users\%USERNAME%\AppData\LocalLow\IronGate\Valheim\worlds_local\` (replace `%USERNAME%` with your OS user if it doesn't work automatically) - files placed here should become visible in the worlds list even with cloud saves on.
+```
+docker/                      # Flavor 1: docker-compose + env + README
+kustomize/
+  base/                      # the shared core (one source of truth)
+  components/
+    observability/           # ServiceMonitor + Grafana dashboard (opt-in)
+    secrets-openbao/         # ExternalSecret for valheim-secrets (opt-in)
+    backup/                  # inert S3 seam scaffold (Phase 3)
+  overlays/
+    plain/                   # Flavor 2: base + plain Secret (example "midgard")
+    gitops/                  # Flavor 3: base + observability + secrets-openbao
+scripts/start-server.sh      # data-driven per-instance overlay renderer
+```
+
+## Details
+
+- **Image:** `mbround18/valheim:3.6.0` (pinned, never `:latest`), with the Huginn HTTP server (`HTTP_PORT`/`PUBLIC`/`ADDRESS`) serving `/metrics` + `/status`.
+- **Player lists:** the `valheim-player-lists` ConfigMap (admin / banned / permitted) is copied into the world config dir by an init container.
+- **Backup:** the `components/backup` seam is an inert scaffold — no backup ships in Phase 1; Phase 3 fills it with an S3-endpoint-agnostic CronJob. The legacy NFS/datapod/`AUTO_BACKUP` paths are retired.
+- **Architecture:** the Valheim dedicated server is x86_64-only (no ARM build), and its bundled 32-bit SteamCMD segfaults under emulation — so run it on an **amd64** host/cluster (GKE, an amd64 homelab, or a Windows/Linux amd64 box). The manifests are architecture-independent; the game binary is not.
 
 ## License
 
-This project is licensed under Apache v2.0 with contributions and forks welcome. The [Docker Image](https://github.com/mbround18/valheim-docker) used is licensed as per its project descriptions.
+This project is Apache-2.0, contributions and forks welcome. The [`mbround18/valheim`](https://github.com/mbround18/valheim-docker) image is licensed per its upstream project.

@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: valheim
+  labels:
+    # REQUIRED: heimdall's kube-prometheus-stack Prometheus selects ServiceMonitors
+    # by this release label. Without it the target is never scraped.
+    release: heimdall-kube-prometheus
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  selector:
+    matchLabels:
+      # Select ONLY the metrics Service. Matching on `app: valheim` alone would
+      # also hit the game NodePort Service (same label), which has no `huginn`
+      # port — making the operator log "port not found".
+      app: valheim
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: huginn          # named TCP port on the valheim-metrics Service
+      path: /metrics
+      interval: 30s
+  # No namespaceSelector: default to same-namespace selection so this works in any
+  # instance namespace (kubicvalheim, valheim-<name>, ...) rather than hardcoding one.
+  # The ServiceMonitor and the valheim-metrics Service are always co-located.

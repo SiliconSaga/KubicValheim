@@ -1,0 +1,26 @@
+services:
+  valheim:
+    image: mbround18/valheim:3.6.0
+    container_name: valheim
+    restart: unless-stopped
+    ports:
+      - "2456-2457:2456-2457/udp"
+      - "8080:8080/tcp"            # Huginn /metrics + /status
+    environment:
+      NAME: "${VALHEIM_NAME:-KubicValheim}"
+      WORLD: "${VALHEIM_WORLD:-Dedicated}"
+      PORT: "2456"
+      PASSWORD: "${VALHEIM_PASSWORD:?set VALHEIM_PASSWORD in .env}"
+      PUBLIC: "1"
+      HTTP_PORT: "8080"
+      ADDRESS: "127.0.0.1:2457"
+    volumes:
+      - valheim-data:/home/steam/.config/unity3d/IronGate/Valheim
+      # Persist the SteamCMD-installed server binaries (~1GB) so they aren't
+      # re-downloaded on every container recreate.
+      - valheim-server:/home/steam/valheim
+    stop_grace_period: 2m          # let the server flush the world on shutdown
+
+volumes:
+  valheim-data:
+  valheim-server:

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valheim
+  labels:
+    app: valheim
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app: valheim
+  ports:
+    - name: game
+      protocol: UDP
+      port: 2456
+      targetPort: game
+      nodePort: 32456     # overlay patches per-instance (30000-32767, cluster-unique)
+    - name: query
+      protocol: UDP
+      port: 2457
+      targetPort: query
+      nodePort: 32457     # overlay patches per-instance (= game nodePort + 1)

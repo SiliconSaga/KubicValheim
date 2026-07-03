@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valheim-metrics
+  labels:
+    app: valheim
+    # Distinguishes this metrics Service from the game NodePort Service (both are
+    # app: valheim) so the observability ServiceMonitor selects only this one.
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app: valheim
+  ports:
+    - name: huginn
+      protocol: TCP
+      port: 8080
+      targetPort: huginn
