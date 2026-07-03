@@ -20,7 +20,7 @@ docker compose logs -f
 
 ## Connecting
 
-Players connect at `<host>:2457` (the query port, game port + 1) in the Steam server browser or via direct connect. Make sure the host firewall allows UDP 2456-2457.
+Valheim listens on UDP **2456** (game) and **2457** (query — the port the Steam server browser lists and players use to find/join the server). Add the server in the Steam server browser by its query port, `<host>:2457`. Allow UDP 2456-2457 through the host firewall either way.
 
 ## Metrics & status
 

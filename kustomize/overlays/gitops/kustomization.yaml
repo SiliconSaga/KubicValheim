@@ -12,16 +12,11 @@ components:
   # - ../../components/backup   # inert scaffold; enable in Phase 3
 
 patches:
-  - target:
-      kind: Service
-      name: valheim
-    patch: |-
-      - op: replace
-        path: /spec/ports/0/nodePort
-        value: 32456
-      - op: replace
-        path: /spec/ports/1/nodePort
-        value: 32457
+  # This overlay uses base/service.yaml's default node ports (32456/32457) — no
+  # nodePort patch needed. A SECOND gitops-style instance MUST override the node
+  # ports here (a JSON6902 replace on /spec/ports/{0,1}/nodePort) to avoid a
+  # cluster-wide collision on those NodePorts.
+  #
   # Per-instance name/world (strategic merge by env name — order-independent;
   # matches the plain "midgard" example).
   - patch: |-

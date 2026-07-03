@@ -12,5 +12,9 @@ resources:
   - pvc.yaml
   - configmap-playerlists.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: kubicvalheim
+# `labels` (with includeSelectors) is the modern replacement for the deprecated
+# commonLabels — same effect: stamps metadata + Deployment/Service selectors.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: kubicvalheim
+    includeSelectors: true
