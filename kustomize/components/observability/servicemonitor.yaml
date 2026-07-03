@@ -10,13 +10,15 @@ metadata:
 spec:
   selector:
     matchLabels:
+      # Select ONLY the metrics Service. Matching on `app: valheim` alone would
+      # also hit the game NodePort Service (same label), which has no `huginn`
+      # port — making the operator log "port not found".
       app: valheim
+      app.kubernetes.io/component: metrics
   endpoints:
     - port: huginn          # named TCP port on the valheim-metrics Service
       path: /metrics
       interval: 30s
-  namespaceSelector:
-    # Prometheus-operator ServiceMonitor uses matchNames (namespace-name list),
-    # NOT a label selector. The instance namespace is kubicvalheim (per overlay).
-    matchNames:
-      - kubicvalheim
+  # No namespaceSelector: default to same-namespace selection so this works in any
+  # instance namespace (kubicvalheim, valheim-<name>, ...) rather than hardcoding one.
+  # The ServiceMonitor and the valheim-metrics Service are always co-located.

@@ -4,6 +4,9 @@ metadata:
   name: valheim-metrics
   labels:
     app: valheim
+    # Distinguishes this metrics Service from the game NodePort Service (both are
+    # app: valheim) so the observability ServiceMonitor selects only this one.
+    app.kubernetes.io/component: metrics
 spec:
   type: ClusterIP
   selector:

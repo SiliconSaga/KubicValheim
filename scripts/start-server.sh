@@ -11,12 +11,18 @@ set -euo pipefail
 NAME="${1:?usage: start-server.sh <name> [gamePort] [world]}"
 GAME_PORT="${2:-32456}"
 WORLD="${3:-$(printf '%s' "${NAME^}")}"
-QUERY_PORT=$((GAME_PORT + 1))
 
+# Validate gamePort is an integer BEFORE the arithmetic below, so a non-numeric
+# input yields the friendly message instead of an opaque $(( )) error under set -e.
+if [[ ! "$GAME_PORT" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: gamePort must be an integer (30000-32766)." >&2
+  exit 1
+fi
 if (( GAME_PORT < 30000 || GAME_PORT > 32766 )); then
   echo "ERROR: gamePort must be 30000-32766 so the query port (+1) stays in NodePort range." >&2
   exit 1
 fi
+QUERY_PORT=$((GAME_PORT + 1))
 
 if [[ ! "$NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "ERROR: <name> must be a DNS-1123 label (lowercase alphanumerics and '-', start/end alphanumeric)" >&2
@@ -43,9 +49,9 @@ spec:
         - name: valheim-server
           env:
             - name: NAME
-              value: Kubic${NAME^}
+              value: "Kubic${NAME^}"
             - name: WORLD
-              value: ${WORLD}
+              value: "${WORLD}"
 YAML
 
 cat > "$OVERLAY/secret.yaml" <<YAML
