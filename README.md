@@ -18,7 +18,9 @@ Zero extra tooling — boots with a bare kustomize apply:
 kubectl apply -k kustomize/overlays/plain
 ```
 
-Players connect at `<nodeIP>:32457` (the query port = game port + 1); allow UDP on the chosen node ports (32456-32457 for the example "midgard" instance) on the host firewall. `externalTrafficPolicy: Local` preserves player source IPs.
+Players connect at `<nodeIP>:32456` — the **game** port. Valheim's in-game *Join by IP* takes the game port, not the query port; `32457` is the Steam query/A2S port used by the server browser, and entering it in *Join by IP* fails. Allow UDP on both node ports (32456-32457 for the example "midgard" instance) on the host firewall. `externalTrafficPolicy: Local` preserves player source IPs.
+
+Verified port bindings inside the container (`/proc/net/udp`, `/proc/net/udp6`) for the pinned 3.6.0 image: **2456 game** (IPv6 dual-stack socket — it does not appear in IPv4-only listings), **2457 query** (IPv4), plus a Steam ephemeral socket. Port **2458 is not bound** by this version — older Valheim used `port+2`, which is why long-lived deployments often carry three-port firewall rules, but two is correct here.
 
 Additional instances are **data-driven** — one namespace per instance, no copy-paste:
 

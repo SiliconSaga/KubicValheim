@@ -13,6 +13,16 @@ spec:
     metadata:
       labels:
         app: valheim
+      annotations:
+        # A game server is a pet, not cattle (until Agones lands in Phase 4): it owns a
+        # RWO PVC and has players connected, so letting the cluster autoscaler reclaim
+        # its node mid-session means downtime AND — with NodePort + externalTrafficPolicy
+        # Local — a changed IP for every connected player. No-op on clusters without an
+        # autoscaler (k3s/RD homelab), load-bearing on GKE.
+        # NOTE: this only blocks autoscaler SCALE-DOWN. Node auto-upgrades and manual
+        # drains are voluntary evictions governed by PodDisruptionBudgets, not this
+        # annotation — graceful movement is tafl/Agones work, not solved here.
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
       # Prepare player-list files in the world config dir before the server starts.
       initContainers:
