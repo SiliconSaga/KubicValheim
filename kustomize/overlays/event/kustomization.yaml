@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# A real, committed instance (flavor 2) — unlike `plain`, which is a worked example.
+# Everything here is tracked EXCEPT secret.yaml, which scripts/render-secret.sh
+# generates from $VALHEIM_SERVER_PASSWORD and .gitignore excludes:
+#
+#   ws exec kubicvalheim bash scripts/render-secret.sh event
+#   kubectl apply -k kustomize/overlays/event
+#
+# So the instance's shape is reviewable in Git while its credential never is.
+namespace: kubicvalheim
+
+resources:
+  - namespace.yaml
+  - ../../base
+  # Generated, gitignored. `kustomize build` fails loudly if you forget to render it —
+  # which is the intended failure mode, versus silently shipping an empty password.
+  - secret.yaml
+
+patches:
+  - path: instance-patch.yaml
+  # Node ports for this instance (game 32456, query 32457) — verified free on
+  # gke ttf-cluster (legacy valheim uses 31636-31638 / 31666-31668, ark 31001-31092).
+  # Guarded with test ops so a reorder of base/service.yaml fails loudly.
+  - target:
+      kind: Service
+      name: valheim
+    patch: |-
+      - op: test
+        path: /spec/ports/0/name
+        value: game
+      - op: replace
+        path: /spec/ports/0/nodePort
+        value: 32456
+      - op: test
+        path: /spec/ports/1/name
+        value: query
+      - op: replace
+        path: /spec/ports/1/nodePort
+        value: 32457
