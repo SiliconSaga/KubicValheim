@@ -1,0 +1,20 @@
+# Backups get their OWN claim, deliberately — NOT a subPath on valheim-data.
+#
+# odin archives the whole save dir (`odin backup <savedir> <file>`). If the backup
+# directory lived inside that save dir — which is exactly what mounting
+# valheim-data with `subPath: backups` at /home/steam/backups does, since
+# /home/steam/backups would then BE <savedir>/backups — every hourly tarball would
+# contain every previous tarball. Size roughly doubles per run, and with an hourly
+# AUTO_BACKUP_SCHEDULE and AUTO_BACKUP_DAYS_TO_LIVE=3 (72 retained) the world PVC
+# fills within about a day, at which point world writes start failing. Upstream's
+# own docker-compose puts /home/steam/backups on a separate volume for this reason.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valheim-backups
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

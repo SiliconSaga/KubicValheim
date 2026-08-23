@@ -108,9 +108,9 @@ spec:
               mountPath: /valheim-config
             - name: game-data
               mountPath: /home/steam/valheim
-            - name: world-data
+            # Own claim, NOT a subPath of world-data — see pvc-backups.yaml for why.
+            - name: backups-data
               mountPath: /home/steam/backups
-              subPath: backups
         # Exports backup freshness so "the backup process silently stopped" is
         # visible. Serves /metrics.txt (NOT /metrics) because busybox httpd derives
         # Content-Type from the extension — .txt yields text/plain, which Prometheus
@@ -170,9 +170,8 @@ spec:
             limits:
               memory: 64Mi
           volumeMounts:
-            - name: world-data
+            - name: backups-data
               mountPath: /backups
-              subPath: backups
               readOnly: true
       volumes:
         - name: world-data
@@ -181,6 +180,9 @@ spec:
         - name: game-data
           persistentVolumeClaim:
             claimName: valheim-game
+        - name: backups-data
+          persistentVolumeClaim:
+            claimName: valheim-backups
         - name: player-lists
           projected:
             sources:

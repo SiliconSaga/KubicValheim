@@ -6,7 +6,7 @@ This Kustomize component remains intentionally empty (`resources: []`). Includin
 
 Backups are **not** in this component. As of 2026-08-23 they work in two halves, outside this seam:
 
-1. **odin's built-in `AUTO_BACKUP`** writes hourly tarballs to `/home/steam/backups`, which `base` mounts as a `subPath` on the world PVC. Enabled per-overlay by patching `AUTO_BACKUP="1"`.
+1. **odin's built-in `AUTO_BACKUP`** writes hourly tarballs to `/home/steam/backups`, which `base` backs with its own `valheim-backups` PVC — never a `subPath` of the world PVC, since odin archives the whole save dir and would then nest every backup inside the next one. Enabled per-overlay by patching `AUTO_BACKUP="1"`.
 2. **A nightly Jenkins job** (`backup.Jenkinsfile` + `scripts/backup-server.sh`) uploads the newest tarball to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`, mirroring the long-running KubicArk pattern.
 
 Design: `docs/plans/2026-08-23-backups-and-game-volume-design.md`.

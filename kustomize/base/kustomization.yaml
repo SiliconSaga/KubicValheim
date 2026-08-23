@@ -11,6 +11,7 @@ resources:
   - service-metrics.yaml
   - pvc.yaml
   - pvc-game.yaml
+  - pvc-backups.yaml
   - configmap-playerlists.yaml
 
 # `labels` (with includeSelectors) is the modern replacement for the deprecated
