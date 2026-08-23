@@ -16,3 +16,7 @@ spec:
       protocol: TCP
       port: 8080
       targetPort: huginn
+    - name: backups
+      port: 9101
+      protocol: TCP
+      targetPort: backups

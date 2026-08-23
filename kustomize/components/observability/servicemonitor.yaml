@@ -19,6 +19,9 @@ spec:
     - port: huginn          # named TCP port on the valheim-metrics Service
       path: /metrics
       interval: 30s
+    - port: backups         # busybox exporter on the valheim-metrics Service
+      path: /metrics.txt    # NOT /metrics — see the sidecar comment in base
+      interval: 60s
   # No namespaceSelector: default to same-namespace selection so this works in any
   # instance namespace (kubicvalheim, valheim-<name>, ...) rather than hardcoding one.
   # The ServiceMonitor and the valheim-metrics Service are always co-located.

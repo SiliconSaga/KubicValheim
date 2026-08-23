@@ -111,6 +111,69 @@ spec:
             - name: world-data
               mountPath: /home/steam/backups
               subPath: backups
+        # Exports backup freshness so "the backup process silently stopped" is
+        # visible. Serves /metrics.txt (NOT /metrics) because busybox httpd derives
+        # Content-Type from the extension — .txt yields text/plain, which Prometheus
+        # parses; an extensionless file is served as an opaque type.
+        - name: backup-exporter
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /www
+              write_metrics() {
+                now=$(date +%s)
+                newest=$(ls -1t /backups/*.tar.gz 2>/dev/null | head -1 || true)
+                if [ -n "${newest:-}" ]; then
+                  age=$(( now - $(stat -c %Y "$newest") ))
+                  size=$(stat -c %s "$newest")
+                else
+                  age=-1
+                  size=0
+                fi
+                count=$(ls -1 /backups/*.tar.gz 2>/dev/null | wc -l || echo 0)
+                if [ -f /backups/.last-upload ]; then
+                  upload_age=$(( now - $(stat -c %Y /backups/.last-upload) ))
+                else
+                  upload_age=-1
+                fi
+                {
+                  echo "# HELP valheim_backup_age_seconds Age of the newest local backup tarball. -1 when none exist."
+                  echo "# TYPE valheim_backup_age_seconds gauge"
+                  echo "valheim_backup_age_seconds ${age}"
+                  echo "# HELP valheim_backup_count Number of local backup tarballs retained."
+                  echo "# TYPE valheim_backup_count gauge"
+                  echo "valheim_backup_count ${count}"
+                  echo "# HELP valheim_backup_bytes Size of the newest local backup tarball."
+                  echo "# TYPE valheim_backup_bytes gauge"
+                  echo "valheim_backup_bytes ${size}"
+                  echo "# HELP valheim_backup_upload_age_seconds Age of the last successful off-cluster upload marker. -1 when never uploaded."
+                  echo "# TYPE valheim_backup_upload_age_seconds gauge"
+                  echo "valheim_backup_upload_age_seconds ${upload_age}"
+                } > /www/metrics.txt
+              }
+              write_metrics
+              httpd -p 9101 -h /www
+              while true; do
+                sleep 60
+                write_metrics
+              done
+          ports:
+            - name: backups
+              containerPort: 9101
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: world-data
+              mountPath: /backups
+              subPath: backups
+              readOnly: true
       volumes:
         - name: world-data
           persistentVolumeClaim:
