@@ -4,6 +4,9 @@ kind: Component
 # Opt-in observability: ServiceMonitor (scrapes Huginn /metrics) + Grafana dashboard.
 # Logs require NOTHING here — the cluster-wide OTel Collector DaemonSet (heimdall)
 # auto-collects pod stdout to Loki.
+#
+# Alerts here are the ones true for EVERY instance. Backup alerting is conditional
+# on the overlay setting AUTO_BACKUP="1" and lives in components/observability-backups.
 resources:
   - servicemonitor.yaml
   - dashboard-configmap.yaml

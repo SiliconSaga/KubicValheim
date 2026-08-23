@@ -1,0 +1,59 @@
+# Backup alerting. Split out of components/observability because these rules are
+# only TRUE for an overlay that sets AUTO_BACKUP="1" — see this dir's README.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim-backups
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim-backups
+      rules:
+        # odin's hourly AUTO_BACKUP has stopped producing. 2h allows one missed run
+        # before complaining. -1 means no tarballs exist at all, which is also wrong
+        # once AUTO_BACKUP is on, so the >= 0 guard is deliberately omitted for the
+        # -1 case and handled by its own alert below.
+        - alert: ValheimBackupStale
+          expr: valheim_backup_age_seconds > 7200
+          for: 10m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim backups have stalled in {{ $labels.namespace }}"
+            description: "Newest local backup is {{ $value | humanizeDuration }} old. odin AUTO_BACKUP_SCHEDULE is hourly, so this means it has stopped running."
+        - alert: ValheimBackupMissing
+          expr: valheim_backup_age_seconds == -1
+          for: 30m
+          labels:
+            severity: critical
+            watched: "true"
+          annotations:
+            summary: "Valheim has NO local backups in {{ $labels.namespace }}"
+            description: "No tarballs in /home/steam/backups. Either AUTO_BACKUP is not 1, or the valheim-backups PVC is not mounted."
+        # The off-cluster half. Jenkins runs nightly, so 36h allows one missed night.
+        # This is the alert that proves backups actually LEAVE the cluster — a stalled
+        # upload with healthy local backups is otherwise completely invisible.
+        - alert: ValheimBackupNotUploaded
+          expr: valheim_backup_upload_age_seconds > 129600 or valheim_backup_upload_age_seconds == -1
+          for: 30m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim backups are not reaching GCS from {{ $labels.namespace }}"
+            description: "No successful upload marker for over 36h (-1 means never). The nightly Jenkins job is failing or not scheduled."
+        # The backups half of the valheim-metrics Service scraping down. Explicitly
+        # NOT critical and explicitly not a game-liveness signal: only backup
+        # VISIBILITY is lost here. ValheimDown covers the game, scoped to the huginn
+        # endpoint so it never fires on this one.
+        - alert: ValheimBackupExporterDown
+          expr: up{service="valheim-metrics", endpoint="backups"} == 0
+          for: 10m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim backup exporter in {{ $labels.namespace }} is down — the GAME is unaffected"
+            description: "The backup-exporter sidecar's metrics endpoint has been unscrapeable for 10m in namespace {{ $labels.namespace }}. Players are unaffected; what is lost is visibility into whether backups are still running, so the other Valheim backup alerts are blind until it returns. Its liveness probe should restart it on its own."

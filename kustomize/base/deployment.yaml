@@ -163,6 +163,16 @@ spec:
             - name: backups
               containerPort: 9101
               protocol: TCP
+          # httpd daemonizes, so PID 1 here is the sleep loop: if httpd dies the
+          # container stays Running and simply stops serving forever. This probe is
+          # what makes that self-heal. Intervals are lazy on purpose — it is a static
+          # file server, and restarting it is never urgent.
+          livenessProbe:
+            httpGet:
+              path: /metrics.txt
+              port: backups
+            periodSeconds: 60
+            failureThreshold: 3
           resources:
             requests:
               cpu: 5m

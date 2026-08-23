@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Backup alerting — ONLY include this from an overlay that patches AUTO_BACKUP="1".
+# Base ships AUTO_BACKUP="0"; the exporter sidecar still runs and reports
+# valheim_backup_age_seconds=-1, so on a no-backup overlay ValheimBackupMissing
+# (critical, watched) fires permanently 30 minutes after every deploy. See README.md.
+resources:
+  - prometheusrule-backups.yaml

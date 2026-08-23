@@ -19,6 +19,9 @@ resources:
 
 components:
   - ../../components/observability
+  # Valid here ONLY because this overlay patches AUTO_BACKUP="1" below — on an
+  # overlay without backups these alerts fire permanently. See the component README.
+  - ../../components/observability-backups
 
 patches:
   - path: instance-patch.yaml
