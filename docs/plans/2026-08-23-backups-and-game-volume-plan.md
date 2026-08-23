@@ -260,6 +260,145 @@ Run: `ws commit kubicvalheim .commits/valheim-autobackup-base.md`
 
 ---
 
+### Task 3b: base — backup-freshness exporter sidecar
+
+Nothing currently exposes "is the backup process actually running". Huginn does not know about backups, and a Kubernetes CronJob cannot mount the RWO world PVC while the server holds it. So the pod exports the fact itself.
+
+The exporter is deliberately dependency-free: a busybox loop writes a Prometheus text file, and busybox `httpd` serves it. It is served as **`/metrics.txt`**, not `/metrics`, on purpose — busybox httpd picks Content-Type from the file extension, and a `.txt` file is served as `text/plain`, which Prometheus parses without complaint. An extensionless `metrics` file is served as an opaque type.
+
+**Files:**
+- Modify: `kustomize/base/deployment.yaml`
+- Modify: `kustomize/base/service-metrics.yaml`
+- Modify: `kustomize/components/observability/servicemonitor.yaml`
+
+**Interfaces:**
+- Consumes: the `/home/steam/backups` content produced by Task 3.
+- Produces: metrics `valheim_backup_age_seconds`, `valheim_backup_count`, `valheim_backup_bytes`, `valheim_backup_upload_age_seconds` on container port `9101`, service port name `backups`, HTTP path `/metrics.txt`. Tasks 5 and 9 consume these. `valheim_backup_upload_age_seconds` depends on the marker file written by Task 9.
+
+- [ ] **Step 1: Add the sidecar container**
+
+In `kustomize/base/deployment.yaml`, add to the `containers:` list (as a sibling of `valheim-server`):
+
+```yaml
+        # Exports backup freshness so "the backup process silently stopped" is
+        # visible. Serves /metrics.txt (NOT /metrics) because busybox httpd derives
+        # Content-Type from the extension — .txt yields text/plain, which Prometheus
+        # parses; an extensionless file is served as an opaque type.
+        - name: backup-exporter
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /www
+              write_metrics() {
+                now=$(date +%s)
+                newest=$(ls -1t /backups/*.tar.gz 2>/dev/null | head -1 || true)
+                if [ -n "${newest:-}" ]; then
+                  age=$(( now - $(stat -c %Y "$newest") ))
+                  size=$(stat -c %s "$newest")
+                else
+                  age=-1
+                  size=0
+                fi
+                count=$(ls -1 /backups/*.tar.gz 2>/dev/null | wc -l || echo 0)
+                if [ -f /backups/.last-upload ]; then
+                  upload_age=$(( now - $(stat -c %Y /backups/.last-upload) ))
+                else
+                  upload_age=-1
+                fi
+                {
+                  echo "# HELP valheim_backup_age_seconds Age of the newest local backup tarball. -1 when none exist."
+                  echo "# TYPE valheim_backup_age_seconds gauge"
+                  echo "valheim_backup_age_seconds ${age}"
+                  echo "# HELP valheim_backup_count Number of local backup tarballs retained."
+                  echo "# TYPE valheim_backup_count gauge"
+                  echo "valheim_backup_count ${count}"
+                  echo "# HELP valheim_backup_bytes Size of the newest local backup tarball."
+                  echo "# TYPE valheim_backup_bytes gauge"
+                  echo "valheim_backup_bytes ${size}"
+                  echo "# HELP valheim_backup_upload_age_seconds Age of the last successful off-cluster upload marker. -1 when never uploaded."
+                  echo "# TYPE valheim_backup_upload_age_seconds gauge"
+                  echo "valheim_backup_upload_age_seconds ${upload_age}"
+                } > /www/metrics.txt
+              }
+              write_metrics
+              httpd -p 9101 -h /www
+              while true; do
+                sleep 60
+                write_metrics
+              done
+          ports:
+            - name: backups
+              containerPort: 9101
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: world-data
+              mountPath: /backups
+              subPath: backups
+              readOnly: true
+```
+
+Note `write_metrics` runs once **before** `httpd` starts, so the very first scrape finds a file rather than a 404.
+
+- [ ] **Step 2: Expose the port on the metrics Service**
+
+In `kustomize/base/service-metrics.yaml`, add to `ports:`:
+
+```yaml
+    - name: backups
+      port: 9101
+      protocol: TCP
+      targetPort: backups
+```
+
+- [ ] **Step 3: Scrape it**
+
+In `kustomize/components/observability/servicemonitor.yaml`, add to `endpoints:`:
+
+```yaml
+    - port: backups         # busybox exporter on the valheim-metrics Service
+      path: /metrics.txt    # NOT /metrics — see the sidecar comment in base
+      interval: 60s
+```
+
+- [ ] **Step 4: Verify the render**
+
+Run: `kubectl kustomize kustomize/overlays/gitops`
+
+Expected: container `backup-exporter` present; Service `valheim-metrics` carrying both `huginn` and `backups` ports; ServiceMonitor with two endpoints, the second having `path: /metrics.txt`.
+
+- [ ] **Step 5: Commit**
+
+Write `.commits/valheim-backup-exporter.md`:
+
+```markdown
+---
+message: "feat(kubicvalheim): export backup freshness so a stalled backup is visible"
+
+add:
+  - kustomize/base/deployment.yaml
+  - kustomize/base/service-metrics.yaml
+  - kustomize/components/observability/servicemonitor.yaml
+---
+
+Nothing knew whether backups were actually running. Huginn does not track them, and a CronJob cannot mount the RWO world PVC while the server holds it — so the pod exports the fact itself via a busybox loop plus busybox httpd.
+
+Served as /metrics.txt rather than /metrics deliberately: busybox httpd derives Content-Type from the file extension, so .txt yields text/plain that Prometheus parses, while an extensionless file is served as an opaque type.
+
+`valheim_backup_upload_age_seconds` reads a marker the Jenkins job touches after a successful upload, which is what closes the loop end-to-end rather than only proving odin ran locally.
+```
+
+Run: `ws commit kubicvalheim .commits/valheim-backup-exporter.md`
+
+---
+
 ### Task 4: observability — the down-alert PrometheusRule
 
 **Files:**
@@ -311,7 +450,43 @@ spec:
           annotations:
             summary: "Valheim server in {{ $labels.namespace }} is not online"
             description: "Pod is running and scrapeable but valheim_online=0 for 5m in namespace {{ $labels.namespace }}."
+        # odin's hourly AUTO_BACKUP has stopped producing. 2h allows one missed run
+        # before complaining. -1 means no tarballs exist at all, which is also wrong
+        # once AUTO_BACKUP is on, so the >= 0 guard is deliberately omitted for the
+        # -1 case and handled by its own alert below.
+        - alert: ValheimBackupStale
+          expr: valheim_backup_age_seconds > 7200
+          for: 10m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim backups have stalled in {{ $labels.namespace }}"
+            description: "Newest local backup is {{ $value | humanizeDuration }} old. odin AUTO_BACKUP_SCHEDULE is hourly, so this means it has stopped running."
+        - alert: ValheimBackupMissing
+          expr: valheim_backup_age_seconds == -1
+          for: 30m
+          labels:
+            severity: critical
+            watched: "true"
+          annotations:
+            summary: "Valheim has NO local backups in {{ $labels.namespace }}"
+            description: "No tarballs in /home/steam/backups. Either AUTO_BACKUP is not 1, or the backups subPath is not mounted."
+        # The off-cluster half. Jenkins runs nightly, so 36h allows one missed night.
+        # This is the alert that proves backups actually LEAVE the cluster — a stalled
+        # upload with healthy local backups is otherwise completely invisible.
+        - alert: ValheimBackupNotUploaded
+          expr: valheim_backup_upload_age_seconds > 129600 or valheim_backup_upload_age_seconds == -1
+          for: 30m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim backups are not reaching GCS from {{ $labels.namespace }}"
+            description: "No successful upload marker for over 36h (-1 means never). The nightly Jenkins job is failing or not scheduled."
 ```
+
+**Threshold note:** `129600` is 36h in seconds, chosen so a single missed nightly run does not page. `7200` is 2h, one missed hourly odin run.
 
 - [ ] **Step 2: Register it in the component**
 
@@ -373,11 +548,118 @@ In the `"Memory (working set)"` panel's `targets` array, add:
             { "expr": "sum(kube_pod_container_resource_limits{namespace=\"kubicvalheim\", container=\"valheim-server\", resource=\"memory\"})", "refId": "C", "legendFormat": "limit" }
 ```
 
+- [ ] **Step 2b: Add a backup-freshness panel**
+
+Add a new panel to the dashboard's `panels` array. Backup age in hours, with thresholds so a stalled backup reads red at a glance:
+
+```json
+        {
+          "type": "stat",
+          "title": "Backup age (hours)",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 2 },
+                  { "color": "red", "value": 4 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_age_seconds{namespace=\"kubicvalheim\"}) / 3600", "refId": "A" }
+          ]
+        }
+```
+
+And one for the off-cluster half:
+
+```json
+        {
+          "type": "stat",
+          "title": "Last GCS upload (hours)",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 30 },
+                  { "color": "red", "value": 36 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_upload_age_seconds{namespace=\"kubicvalheim\"}) / 3600", "refId": "A" }
+          ]
+        }
+```
+
+- [ ] **Step 2c: Add the IP drift panels — the red box**
+
+Two panels. The first is the red box: `1` green means the published IP is correct, `0` red means drift.
+
+```json
+        {
+          "type": "stat",
+          "title": "Published IP valid",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "IP DRIFT", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "count(kube_node_status_addresses{type=\"ExternalIP\", address=\"34.26.181.102\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})) or vector(0)", "refId": "A" }
+          ]
+        }
+```
+
+The `or vector(0)` matters: a bare `count()` over an empty set returns *no data*, which renders as blank rather than red. `or vector(0)` guarantees a real 0.
+
+The second panel answers "so what do I change DNS to?" — it reports the external IP of whichever node currently runs the server:
+
+```json
+        {
+          "type": "stat",
+          "title": "Correct IP right now",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+          "options": { "textMode": "name" },
+          "targets": [
+            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})", "refId": "A", "legendFormat": "{{address}}" }
+          ]
+        }
+```
+
+`textMode: name` displays the series name — the `legendFormat` renders the `address` label, so the panel shows the live correct IP to point Namecheap at.
+
 - [ ] **Step 3: Verify the JSON is still valid**
 
 Run: `kubectl kustomize kustomize/overlays/gitops`
 
 Expected: renders without error. A malformed dashboard JSON breaks the build here rather than silently failing in Grafana.
+
+Also sanity-check the JSON parses standalone — kustomize will happily embed invalid JSON as an opaque string:
+
+Run: `ws exec kubicvalheim python3 -c "import yaml,json,sys; d=yaml.safe_load(open('kustomize/components/observability/dashboard-configmap.yaml')); json.loads(d['data']['valheim.json']); print('dashboard JSON OK')"`
+
+Expected: `dashboard JSON OK`
 
 - [ ] **Step 4: Commit**
 
@@ -514,6 +796,50 @@ And add to the `patches:` list:
                     value: "1"
 ```
 
+- [ ] **Step 3b: Add the published-IP drift alert**
+
+This alert pins a specific IP and namespace, so it lives in the **overlay**, not the shared component.
+
+Under `externalTrafficPolicy: Local` only the node running the pod answers on the NodePort. If the pod moves, or the node's external IP changes on recycle, the address players use goes dead while everything in-cluster still looks perfectly healthy. Nothing else detects this.
+
+Create `kustomize/overlays/valheim7/prometheusrule-ip.yaml`:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim-published-ip
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim-published-ip
+      rules:
+        # kube_node_status_addresses and kube_pod_info both carry a `node` label, so
+        # the join asks: "is the published IP the external IP of the node currently
+        # running the server?" When the pod moves or the node's IP is recycled the
+        # join yields nothing and absent() fires.
+        #
+        # UPDATE THE address= VALUE whenever the published IP legitimately changes
+        # (and update Namecheap DNS to match).
+        - alert: ValheimPublishedIPDrift
+          expr: >-
+            absent(
+              kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"}
+              * on(node) group_left()
+              max by(node) (kube_pod_info{namespace="kubicvalheim", pod=~"valheim-.*"})
+            )
+          for: 5m
+          labels:
+            severity: critical
+            watched: "true"
+          annotations:
+            summary: "Valheim published IP 34.26.181.102 no longer points at the server"
+            description: "The server pod is not on the node holding 34.26.181.102. Players cannot connect. Check the dashboard's 'Correct IP right now' panel for the address to point DNS at."
+```
+
+Register it in `kustomize/overlays/valheim7/kustomization.yaml` by adding `- prometheusrule-ip.yaml` to `resources:`.
+
 - [ ] **Step 4: Update the grandfathering comment**
 
 In `kustomize/overlays/valheim7/kustomization.yaml`, replace the namespace comment with:
@@ -643,6 +969,13 @@ echo "Copied $(stat -c %s "$local_file") bytes to ${local_file}"
 
 gsutil cp "$local_file" "${bucket}/${slug}/${ts}/${local_file}"
 echo "Uploaded: ${bucket}/${slug}/${ts}/${local_file}"
+
+# Touch the marker the backup-exporter sidecar reads, ONLY after a confirmed upload.
+# This is what makes `valheim_backup_upload_age_seconds` mean "backups are actually
+# leaving the cluster" rather than merely "odin ran locally". Placed after gsutil so
+# a failed upload leaves the marker stale and the alert fires.
+kubectl exec -n "$ns" "$pod" -c valheim-server -- touch /home/steam/backups/.last-upload
+echo "Upload marker refreshed"
 ```
 
 - [ ] **Step 3: Make it executable**
@@ -956,7 +1289,13 @@ Run: `ws k8s apply -f /Users/cervator/dev/git_ws/yggdrasil/.tmp/testbed.yaml -n 
 | 7 | Alert fires | `ws k8s scale deployment valheim -n valheim-testbed --replicas=0`, wait >3m | `ValheimDown` fires; **ntfy push arrives on phone** |
 | 8 | Alert resolves | scale back to 1 | Alert clears, resolved push arrives |
 | 9 | Dashboard | open Grafana dashboard uid `kubicvalheim` | Up, players, CPU and memory each showing usage plus request/limit lines |
+| 11 | Backup exporter scrapes | `ws k8s exec deployment/valheim -n valheim-testbed -c backup-exporter -- wget -qO- http://127.0.0.1:9101/metrics.txt` | All four `valheim_backup_*` metrics present, `age` >= 0 |
+| 12 | Backup freshness alert | delete all tarballs in-pod, wait >30m | `ValheimBackupMissing` fires, ntfy push arrives |
+| 13 | Upload marker | run the Jenkins job | `valheim_backup_upload_age_seconds` drops to near 0 and the dashboard's "Last GCS upload" panel goes green |
+| 14 | **IP drift alert** | temporarily set the overlay's `address=` to a bogus IP and apply the rule; wait >5m | `ValheimPublishedIPDrift` fires; dashboard "Published IP valid" shows red **IP DRIFT**; "Correct IP right now" shows the real node IP. Revert afterwards. |
 | 10 | **Restore** | Cervator joins, places a known object, notes coordinates; run backup; wipe the world PVC; follow `docs/restore.md` | **The known object is present in-game.** Logs show `Load world` with **no** `missing .../Testbed.db` |
+
+Row 14 is worth doing with a deliberately wrong IP rather than waiting for real drift — it is the only way to confirm the join expression is correct before trusting it.
 
 - [ ] **Step 8: Report results and stop**
 
@@ -1043,6 +1382,8 @@ Then open a CR per repo with `ws cr`, using a bodyfile from `templates/change.md
 ## Self-Review
 
 **Spec coverage:** §A volumes → Task 2; §A Recreate → Task 2; §B server side → Task 3; §B Jenkins → Task 8; §B slug → Task 7; §B restore → Task 9; §C observability → Tasks 4-5, 7; §D heimdall → Task 1; §E test plan → Task 10; §F rollout → Task 11; scaffold-README contradiction → Task 6. No gaps.
+
+**Post-design additions (2026-08-23, Cervator):** two observability gaps not in the original spec. Backup freshness → new Task 3b (exporter sidecar) plus alerts in Task 4, panels in Task 5, and the upload marker in Task 8. Published-IP drift → alert in Task 7 Step 3b plus two panels in Task 5 Step 2c. Both metrics were verified to exist in the deployed kube-state-metrics before the expressions were written: `kube_node_status_addresses{type="ExternalIP"}` and `kube_pod_info` share a `node` label, which is what makes the drift join possible. A follow-up to auto-update Namecheap DNS on drift is explicitly **out of scope** for this round.
 
 **Deviation from spec, recorded:** the design showed the alert expressions pinned to a namespace. Task 4 drops the pin and explains why — a namespace-pinned expression in a shared Kustomize component would force every overlay to patch the expression string, and `absent()` is unusable multi-instance regardless since it is global. Per-namespace series plus Alertmanager dedup achieves the same outcome with one rule.
 
