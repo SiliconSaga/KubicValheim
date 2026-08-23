@@ -5,6 +5,12 @@ metadata:
   labels:
     app: valheim
 spec:
+  # A single replica holding RWO volumes cannot roll: the default RollingUpdate
+  # (maxSurge 25% -> 1) starts the new pod BEFORE the old releases its disks, so
+  # the new pod blocks on multi-attach. This has only ever worked by the luck of
+  # both pods co-scheduling onto one node, where a GCE PD can mount twice.
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
@@ -82,10 +88,18 @@ spec:
               mountPath: /home/steam/.config/unity3d/IronGate/Valheim
             - name: player-lists
               mountPath: /valheim-config
+            - name: game-data
+              mountPath: /home/steam/valheim
+            - name: world-data
+              mountPath: /home/steam/backups
+              subPath: backups
       volumes:
         - name: world-data
           persistentVolumeClaim:
             claimName: valheim-data
+        - name: game-data
+          persistentVolumeClaim:
+            claimName: valheim-game
         - name: player-lists
           projected:
             sources:
