@@ -53,7 +53,7 @@ scripts/start-server.sh      # data-driven per-instance overlay renderer
 
 - **Image:** `mbround18/valheim:3.6.0` (pinned, never `:latest`), with the Huginn HTTP server (`HTTP_PORT`/`PUBLIC`/`ADDRESS`) serving `/metrics` + `/status`.
 - **Player lists:** the `valheim-player-lists` ConfigMap (admin / banned / permitted) is copied into the world config dir by an init container.
-- **Backup:** the `components/backup` seam is an inert scaffold — no backup ships in Phase 1; Phase 3 fills it with an S3-endpoint-agnostic CronJob. The legacy NFS/datapod/`AUTO_BACKUP` paths are retired.
+- **Backup:** odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups` (mounted as a `subPath` on the world PVC); a nightly Jenkins job ships the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. Restore procedure: [`docs/restore.md`](docs/restore.md). The `components/backup` seam remains inert and is reserved for the Phase-3 S3-endpoint-agnostic CronJob.
 - **Architecture:** the Valheim dedicated server is x86_64-only (no ARM build), and its bundled 32-bit SteamCMD segfaults under emulation — so run it on an **amd64** host/cluster (GKE, an amd64 homelab, or a Windows/Linux amd64 box). The manifests are architecture-independent; the game binary is not.
 
 ## License
