@@ -2,7 +2,7 @@
 # Render an instance's valheim-secrets Secret from the environment, so a real
 # password never lives in Git.
 #
-# Usage: render-secret.sh [overlay]           # default overlay: event
+# Usage: render-secret.sh [overlay]           # default overlay: valheim7
 #
 # Reads $VALHEIM_SERVER_PASSWORD and writes kustomize/overlays/<overlay>/secret.yaml
 # (gitignored). Deliberately contains NO kubectl call: it only writes a manifest, so
@@ -15,7 +15,7 @@
 # Standalone, just export it yourself first.
 set -euo pipefail
 
-OVERLAY="${1:-event}"
+OVERLAY="${1:-valheim7}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_DIR="$ROOT/kustomize/overlays/$OVERLAY"
 
