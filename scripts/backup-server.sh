@@ -17,7 +17,7 @@ bucket="gs://kubic-game-hosting/valheim"
 # failure this design exists to avoid.
 max_age_seconds=10800   # 3h
 
-pod="$(kubectl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}')"
+pod="$(kubectl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 if [ -z "$pod" ]; then
   echo "ERROR: no pod with label app=valheim in namespace ${ns}" >&2
   exit 1

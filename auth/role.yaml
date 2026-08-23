@@ -3,6 +3,9 @@ kind: Role
 metadata:
   name: valheim-backup
   namespace: kubicvalheim
+# NOT currently bound to anything backup.Jenkinsfile actually uses — that job runs
+# under 'utility-admin-kubeconfig-sa-token', already bound cluster-admin. This Role
+# documents least-privilege intent but doesn't enforce it at runtime yet.
 rules:
   - apiGroups: [""]
     resources: ["pods"]
