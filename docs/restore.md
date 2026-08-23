@@ -21,11 +21,11 @@ Releases the RWO volumes so another pod can mount them.
 
 ## 3. Replace the world files
 
-Start a throwaway pod mounting the world PVC, copy the tarball in, and extract it over the world dir. The archive is rooted at the Valheim config dir, so extract with `-C` pointing at the mount.
+Start a throwaway pod mounting the world PVC, copy the tarball in, and extract it over the world dir. The archive is rooted at the Valheim config dir, so extract with `-C` pointing at the mount. Pod deletion isn't the same as the volume actually detaching, so if the helper pod times out waiting to become Ready, the previous attachment is probably still releasing — wait ~30s and retry rather than assuming the restore has failed.
 
     ws k8s run restore-helper -n <ns> --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
     ws k8s wait pod restore-helper -n <ns> --for=condition=Ready --timeout=120s
-    kubectl cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
+    ws k8s cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
     ws k8s exec restore-helper -n <ns> -- tar xzf /tmp/restore.tar.gz -C /world
     ws k8s delete pod restore-helper -n <ns>
 
