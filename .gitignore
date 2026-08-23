@@ -5,12 +5,12 @@
 kustomize/overlays/*/
 !kustomize/overlays/plain/
 !kustomize/overlays/gitops/
-!kustomize/overlays/event/
+!kustomize/overlays/valheim7/
 
 # ...but a real instance's rendered Secret never lands in Git. scripts/render-secret.sh
 # writes this from $VALHEIM_SERVER_PASSWORD at deploy time. (overlays/plain/secret.yaml
 # is tracked-but-empty as a template and is unaffected by this rule.)
-kustomize/overlays/event/secret.yaml
+kustomize/overlays/valheim7/secret.yaml
 
 # Local docker env with a real password (never commit secrets)
 docker/.env

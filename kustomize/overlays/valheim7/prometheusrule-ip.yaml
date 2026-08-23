@@ -1,0 +1,31 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim-published-ip
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim-published-ip
+      rules:
+        # kube_node_status_addresses and kube_pod_info both carry a `node` label, so
+        # the join asks: "is the published IP the external IP of the node currently
+        # running the server?" When the pod moves or the node's IP is recycled the
+        # join yields nothing and absent() fires.
+        #
+        # UPDATE THE address= VALUE whenever the published IP legitimately changes
+        # (and update Namecheap DNS to match).
+        - alert: ValheimPublishedIPDrift
+          expr: >-
+            absent(
+              kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"}
+              * on(node) group_left()
+              max by(node) (kube_pod_info{namespace="kubicvalheim", pod=~"valheim-.*"})
+            )
+          for: 5m
+          labels:
+            severity: critical
+            watched: "true"
+          annotations:
+            summary: "Valheim published IP 34.26.181.102 no longer points at the server"
+            description: "The server pod is not on the node holding 34.26.181.102. Players cannot connect. Check the dashboard's 'Correct IP right now' panel for the address to point DNS at."

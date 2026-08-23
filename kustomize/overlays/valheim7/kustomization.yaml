@@ -1,14 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# A real, committed instance (flavor 2) — unlike `plain`, which is a worked example.
-# Everything here is tracked EXCEPT secret.yaml, which scripts/render-secret.sh
-# generates from $VALHEIM_SERVER_PASSWORD and .gitignore excludes:
-#
-#   ws exec kubicvalheim bash scripts/render-secret.sh event
-#   kubectl apply -k kustomize/overlays/event
-#
-# So the instance's shape is reviewable in Git while its credential never is.
+# Slug `valheim7` names the overlay dir, the GCS path, and the Jenkins job.
+# The NAMESPACE is deliberately `kubicvalheim`, not `valheim-valheim7`:
+# renaming it would mean a new PVC, and `standard-rwo` has reclaimPolicy Delete,
+# so the Jotunheim world would be deleted with the old claim. Grandfathered until
+# Phase 3, where the expectation is that this instance is RESTORED into its tafl
+# home from a bucket file rather than migrated in place.
 namespace: kubicvalheim
 
 resources:
@@ -17,6 +15,10 @@ resources:
   # Generated, gitignored. `kustomize build` fails loudly if you forget to render it —
   # which is the intended failure mode, versus silently shipping an empty password.
   - secret.yaml
+  - prometheusrule-ip.yaml
+
+components:
+  - ../../components/observability
 
 patches:
   - path: instance-patch.yaml
@@ -39,3 +41,17 @@ patches:
       - op: replace
         path: /spec/ports/1/nodePort
         value: 32457
+  # Turn on odin's scheduled backups for this instance (base ships them off).
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: valheim
+      spec:
+        template:
+          spec:
+            containers:
+              - name: valheim-server
+                env:
+                  - name: AUTO_BACKUP
+                    value: "1"
