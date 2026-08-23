@@ -7,3 +7,4 @@ kind: Component
 resources:
   - servicemonitor.yaml
   - dashboard-configmap.yaml
+  - prometheusrule.yaml
