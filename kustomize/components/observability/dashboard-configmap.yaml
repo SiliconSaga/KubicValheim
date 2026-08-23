@@ -62,7 +62,7 @@ data:
         {
           "type": "stat",
           "title": "Backup age (hours)",
-          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 8 },
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 14 },
           "fieldConfig": {
             "defaults": {
               "unit": "h",
@@ -83,7 +83,7 @@ data:
         {
           "type": "stat",
           "title": "Last GCS upload (hours)",
-          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 8 },
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 14 },
           "fieldConfig": {
             "defaults": {
               "unit": "h",
@@ -104,7 +104,7 @@ data:
         {
           "type": "stat",
           "title": "Published IP valid",
-          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 8 },
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 14 },
           "fieldConfig": {
             "defaults": {
               "mappings": [
@@ -126,7 +126,7 @@ data:
         {
           "type": "stat",
           "title": "Correct IP right now",
-          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
           "options": { "textMode": "name" },
           "targets": [
             { "expr": "kube_node_status_addresses{type=\"ExternalIP\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})", "refId": "A", "legendFormat": "{{address}}" }
