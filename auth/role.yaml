@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: valheim-backup
+  namespace: kubicvalheim
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # `kubectl cp` is implemented as an exec, so it needs this too.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
