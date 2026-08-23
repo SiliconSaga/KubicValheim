@@ -29,12 +29,12 @@ The scaffold README must be rewritten as part of this work so the repo does not 
 ## A. Volume layout and restart safety
 
 ```
-valheim-data   10Gi RWO   ~/.config/unity3d/IronGate/Valheim      (existing)
-                      +   /home/steam/backups   subPath: backups  (NEW mount)
-valheim-game   10Gi RWO   /home/steam/valheim                     (NEW PVC)
+valheim-data     10Gi RWO   ~/.config/unity3d/IronGate/Valheim    (existing)
+valheim-game     10Gi RWO   /home/steam/valheim                   (NEW PVC)
+valheim-backups  10Gi RWO   /home/steam/backups                   (NEW PVC)
 ```
 
-Backups live on the world PVC under a subPath rather than getting their own volume. They are staging only — Jenkins ships them off-cluster nightly — so co-locating them with the world keeps the volume count down and means a restore recovers world and local backup history together. The trade is that losing the world PVC also loses local tarballs; the off-cluster copies are unaffected, which is the point of having them.
+> **Corrected during final review.** This section originally put backups on the world PVC under `subPath: backups`, reasoning that they are staging only so co-locating them keeps the volume count down and lets a restore recover world and backup history together. That reasoning is wrong and the shipped manifests do not follow it. `subPath: backups` on `valheim-data` makes `/home/steam/backups` literally `<savedir>/backups`, and odin archives the whole savedir — so every hourly tarball would contain all previous tarballs, roughly doubling each run until the 10Gi world PVC fills (about a day at hourly with 72 retained) and world writes fail. Upstream's own docker-compose puts `/home/steam/backups` on a separate volume for exactly this reason. Backups get their own `valheim-backups` claim. The trade is now the opposite of the one described: losing the world PVC no longer takes the local tarballs with it.
 
 `/home/steam/backups` **requires** a mount. The upstream docs are explicit: backups are written there and are lost with the container otherwise. Enabling `AUTO_BACKUP` without this mount silently produces nothing durable.
 
