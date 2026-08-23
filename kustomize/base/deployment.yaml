@@ -73,6 +73,24 @@ spec:
               value: "8080"                 # Huginn HTTP server: /metrics + /status
             - name: ADDRESS
               value: "127.0.0.1:2457"       # Huginn query target = game port + 1
+            # Backups are OFF in base; overlays opt in by patching AUTO_BACKUP="1".
+            # Requires the /home/steam/backups mount above — without it odin writes
+            # tarballs into the container and they vanish with the pod.
+            - name: AUTO_BACKUP
+              value: "0"
+            # HOURLY, deliberately, not nightly. The nightly Jenkins upload and a
+            # nightly odin backup are two schedulers that cannot see each other: a
+            # Jenkins run firing first would ship YESTERDAY's world, and the upload
+            # would still succeed, so the failure is invisible. Hourly means "newest
+            # tarball" is at most an hour old whenever Jenkins happens to run.
+            - name: AUTO_BACKUP_SCHEDULE
+              value: "0 * * * *"
+            - name: AUTO_BACKUP_ON_SHUTDOWN
+              value: "1"
+            - name: AUTO_BACKUP_REMOVE_OLD
+              value: "1"
+            - name: AUTO_BACKUP_DAYS_TO_LIVE
+              value: "3"
           ports:
             - name: game
               containerPort: 2456
