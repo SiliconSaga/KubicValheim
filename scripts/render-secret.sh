@@ -66,17 +66,23 @@ fi
 # so it is checked here instead. instance-patch.yaml lists NAME before WORLD (the
 # order scripts/start-server.sh always generates), so the first "value:" line is
 # the server name and the second is the world name.
+#
+# Valheim's own check is case-INsensitive, so this one must be too — "Shattered
+# Vikings" / "vikings" (the docstring example above) differ only in case, and a
+# case-sensitive comparison here would wave it straight through to a server that
+# refuses to start. Lowercase both operands into locals before comparing, rather
+# than a scoped `nocasematch`, so nothing here depends on shell option state.
 SERVER_NAME="$(sed -n 's/^[[:space:]]*value:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' \
   "$TARGET_DIR/instance-patch.yaml" | head -1)"
-if [[ -n "$SERVER_NAME" && "$SERVER_NAME" == *"$VALHEIM_SERVER_PASSWORD"* ]]; then
-  echo "ERROR: password must not be a substring of the server name ('$SERVER_NAME')." >&2
+if [[ -n "$SERVER_NAME" && "${SERVER_NAME,,}" == *"${VALHEIM_SERVER_PASSWORD,,}"* ]]; then
+  echo "ERROR: password must not be a substring of the server name ('$SERVER_NAME'), case-insensitive." >&2
   exit 1
 fi
 
 WORLD_NAME="$(sed -n 's/^[[:space:]]*value:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' \
   "$TARGET_DIR/instance-patch.yaml" | sed -n '2p')"
-if [[ -n "$WORLD_NAME" && "$WORLD_NAME" == *"$VALHEIM_SERVER_PASSWORD"* ]]; then
-  echo "ERROR: password must not be a substring of the world name ('$WORLD_NAME')." >&2
+if [[ -n "$WORLD_NAME" && "${WORLD_NAME,,}" == *"${VALHEIM_SERVER_PASSWORD,,}"* ]]; then
+  echo "ERROR: password must not be a substring of the world name ('$WORLD_NAME'), case-insensitive." >&2
   exit 1
 fi
 
