@@ -1334,12 +1334,14 @@ Run: `ws k8s apply -f /Users/cervator/dev/git_ws/yggdrasil/.tmp/testbed.yaml -n 
 | 8 | Alert resolves | scale back to 1 | Alert clears, resolved push arrives |
 | 9 | Dashboard | open Grafana dashboard uid `kubicvalheim` | Up, players, CPU and memory each showing usage plus request/limit lines |
 | 11 | Backup exporter scrapes | `ws k8s exec deployment/valheim -n valheim-testbed -c backup-exporter -- wget -qO- http://127.0.0.1:9101/metrics.txt` | All four `valheim_backup_*` metrics present, `age` >= 0 |
-| 12 | Backup freshness alert | delete all tarballs in-pod, wait >30m | `ValheimBackupMissing` fires, ntfy push arrives |
+| 12 | Backup freshness alert | wait for a tarball timestamped at the top of an hour (`odin`'s `AUTO_BACKUP_SCHEDULE` is `0 * * * *`), then delete all tarballs in-pod **immediately after** that run, then wait >30m. *Timing matters here — see note below the table; do not delete tarballs at a random moment.* | `ValheimBackupMissing` fires, ntfy push arrives |
 | 13 | Upload marker | run the Jenkins job | `valheim_backup_upload_age_seconds` drops to near 0 and the dashboard's "Last GCS upload" panel goes green |
 | 14 | **IP drift alert** | temporarily set the overlay's `address=` to a bogus IP and apply the rule; wait >5m | `ValheimPublishedIPDrift` fires; dashboard "Published IP valid" shows red **IP DRIFT**; "Correct IP right now" shows the real node IP. Revert afterwards. |
 | 10 | **Restore** | Cervator joins, places a known object, notes coordinates; run backup; wipe the world PVC; follow `docs/restore.md` | **The known object is present in-game.** Logs show `Load world` with **no** `missing .../Testbed.db` |
 
 Row 14 is worth doing with a deliberately wrong IP rather than waiting for real drift — it is the only way to confirm the join expression is correct before trusting it.
+
+**Row 12 timing note — do not remove as "redundant":** `AUTO_BACKUP` runs hourly at minute 0. Deleting tarballs at a random moment risks a scheduled backup landing inside the 30m `for:` window, refreshing `valheim_backup_age_seconds` and clearing the condition before `ValheimBackupMissing`'s `for: 30m` completes — failing the test even though alerting is working correctly. Deleting right after a `:00` run puts the next scheduled backup a full hour away, comfortably outside the 30m window, so the alert gets an uninterrupted 30m to fire. (Row 13's Upload marker check does not share this hazard: it manually triggers the Jenkins job and checks the metric right after, so it never waits on a schedule to clear anything.)
 
 - [ ] **Step 8: Report results and stop**
 
