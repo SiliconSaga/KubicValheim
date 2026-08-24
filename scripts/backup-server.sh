@@ -67,6 +67,20 @@ if [ ! -s "$local_file" ]; then
 fi
 echo "Copied $(stat -c %s "$local_file") bytes to ${local_file}"
 
+# Non-empty does not mean complete. Odin writes directly to the final .tar.gz
+# path — including from its shutdown hook — so a pod terminating mid-backup can
+# leave a fresh, non-empty, TRUNCATED tarball that would otherwise sail past
+# both guards above and get uploaded as the newest backup. A corrupt backup
+# that looks healthy is worse than a missing one: it would silently defeat the
+# staleness alert. `tar -tzf` decompresses and walks the whole archive, so a
+# truncated gzip stream or a cut-off tar member both fail it.
+if ! tar -tzf "$local_file" >/dev/null 2>&1; then
+  echo "ERROR: ${local_file} is corrupt or truncated (failed tar -tzf integrity check) — NOT uploaded." >&2
+  echo "  Leaving the stale-backup alert firing rather than shipping a broken archive as 'latest'." >&2
+  exit 1
+fi
+echo "Integrity check passed (tar -tzf)"
+
 gsutil cp "$local_file" "${bucket}/${slug}/${ts}/${local_file}"
 echo "Uploaded: ${bucket}/${slug}/${ts}/${local_file}"
 
