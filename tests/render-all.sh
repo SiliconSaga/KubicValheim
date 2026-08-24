@@ -180,37 +180,33 @@ data:
   key: value
 YAML
 
-# Candidates are bash ARRAYS (executable + args as separate elements), not
-# strings — a string candidate invoked unquoted word-splits on whitespace, so
-# a KUSTOMIZE_BIN path containing a space would be silently torn apart. Bash
-# can't nest arrays, so each candidate lives in its own uniquely-named array
-# (_cand_N), with candidate_names (display strings, resolved at add time) and
-# candidate_vars (those arrays' names) as parallel, index-aligned lists.
-# run_candidate below is the only place that turns a name back into an array,
-# via `eval` — always on a fixed variable name this script itself constructed,
-# never on external input.
-candidate_names=()
-candidate_vars=()
-_next_candidate=0
-
-add_candidate() {
-  # $1 = display name, remaining args = argv (the target dir is appended by
-  # the caller at invocation time, not stored here).
-  local disp="$1"
-  shift
-  local varname="_cand_${_next_candidate}"
-  eval "${varname}=(\"\$@\")"
-  candidate_names+=("$disp")
-  candidate_vars+=("$varname")
-  _next_candidate=$((_next_candidate + 1))
+# Candidates are identified by a plain id string (kustomize_bin / kustomize /
+# kubectl), dispatched through `case` — NOT bash arrays-of-arrays via `eval`.
+# Bash can't nest arrays, and the previous version worked around that with a
+# script-constructed variable name rebuilt into an argv via `eval`. That eval
+# was always on a fixed name this script itself built, never on external
+# input, so it wasn't unsafe — but it's unneeded complexity a `case` avoids
+# entirely, and it's one more thing to reason about when reading this file.
+# (Design adapted from SiliconSaga/xenforo-k8s, which itself adapted this
+# file.) render_with actually runs a candidate; label_for prints its display
+# name. Both switch on the same id, so adding a candidate means editing both
+# in lockstep — and the fixed set of ids below.
+render_with() {
+  # $1 = candidate id, $2 = directory to build.
+  case "$1" in
+    kustomize_bin) "$KUSTOMIZE_BIN" build "$2" ;;
+    kustomize)     kustomize build "$2" ;;
+    kubectl)       kubectl kustomize "$2" ;;
+  esac
 }
 
-run_candidate() {
-  # $1 = a name from candidate_vars, remaining args appended after its argv.
-  local varname="$1"
-  shift
-  eval "local cmd=(\"\${${varname}[@]}\")"
-  "${cmd[@]}" "$@"
+label_for() {
+  # $1 = candidate id.
+  case "$1" in
+    kustomize_bin) printf '%s build' "$KUSTOMIZE_BIN" ;;
+    kustomize)     printf 'kustomize build' ;;
+    kubectl)       printf 'kubectl kustomize' ;;
+  esac
 }
 
 # A renderer can exit 0 on the fixture while silently ignoring `components:` or
@@ -255,36 +251,35 @@ assert_capability_output() {
   (( has_configmap == 1 && deploy_ok == 1 && svc_ok == 1 ))
 }
 
-[[ -n "${KUSTOMIZE_BIN:-}" ]] && add_candidate "$KUSTOMIZE_BIN build" "$KUSTOMIZE_BIN" build
-command -v kustomize >/dev/null 2>&1 && add_candidate "kustomize build" kustomize build
-command -v kubectl   >/dev/null 2>&1 && add_candidate "kubectl kustomize" kubectl kustomize
+candidate_ids=()
+[[ -n "${KUSTOMIZE_BIN:-}" ]] && candidate_ids+=("kustomize_bin")
+command -v kustomize >/dev/null 2>&1 && candidate_ids+=("kustomize")
+command -v kubectl   >/dev/null 2>&1 && candidate_ids+=("kubectl")
 
-if (( ${#candidate_names[@]} == 0 )); then
+if (( ${#candidate_ids[@]} == 0 )); then
   echo "ERROR: need either 'kustomize' or 'kubectl' on PATH (or KUSTOMIZE_BIN set)." >&2
   exit 2
 fi
 
 probe_err=""
-renderer_var=""
-renderer_name=""
-for i in "${!candidate_names[@]}"; do
-  if fixture_out="$(run_candidate "${candidate_vars[$i]}" "$fixture_dir" 2>"$stderr_file")"; then
+renderer_id=""
+for id in "${candidate_ids[@]}"; do
+  if fixture_out="$(render_with "$id" "$fixture_dir" 2>"$stderr_file")"; then
     if assert_capability_output "$fixture_out"; then
-      renderer_var="${candidate_vars[$i]}"
-      renderer_name="${candidate_names[$i]}"
+      renderer_id="$id"
       break
     fi
     # Exited 0, but the rendered output doesn't actually show `components:` or
     # `includeSelectors` semantics honoured — not capable, keep probing.
     if [[ -z "$probe_err" ]]; then
-      probe_err="${candidate_names[$i]} exited 0 on the fixture, but its output failed the capability assertions (missing the component's ConfigMap, and/or the injected label missing from the Deployment's or Service's selector)."
+      probe_err="$(label_for "$id") exited 0 on the fixture, but its output failed the capability assertions (missing the component's ConfigMap, and/or the injected label missing from the Deployment's or Service's selector)."
     fi
     continue
   fi
   [[ -z "$probe_err" ]] && probe_err="$(cat "$stderr_file")"
 done
 
-if [[ -z "$renderer_var" ]]; then
+if [[ -z "$renderer_id" ]]; then
   echo "ERROR: no available renderer could build a minimal test overlay (using components: and labels:)." >&2
   echo >&2
   if [[ -n "$probe_err" ]]; then
@@ -305,7 +300,7 @@ EOF
   exit 2
 fi
 
-echo "Renderer: $renderer_name"
+echo "Renderer: $(label_for "$renderer_id")"
 echo
 # --- End renderer selection ---------------------------------------------------
 
@@ -316,7 +311,7 @@ fail=0
 for overlay_dir in "${overlay_dirs[@]}"; do
   name="$(basename "$overlay_dir")"
 
-  if run_candidate "$renderer_var" "$overlay_dir" >/dev/null 2>"$stderr_file"; then
+  if render_with "$renderer_id" "$overlay_dir" >/dev/null 2>"$stderr_file"; then
     echo "PASS: $name"
     pass=$((pass + 1))
     continue
@@ -330,6 +325,13 @@ for overlay_dir in "${overlay_dirs[@]}"; do
   # secret that hasn't been rendered yet (e.g. a fresh clone) — never a guess.
   if is_missing_secret_failure "$overlay_dir" "$build_err"; then
     dummy_secret="${overlay_dir}secret.yaml"
+    # serverPass is deliberately EMPTY, matching the tracked overlays/plain/secret.yaml
+    # template — never a junk placeholder value. The trap below removes this file on
+    # exit, but if the script were killed hard (e.g. SIGKILL) before that ran, this
+    # dummy would be left sitting in a REAL overlay directory. An empty serverPass
+    # means that leaked file can never stand up a running server with a junk
+    # credential: kustomize renders it fine either way, but odin refuses to start
+    # the server on an empty password, same as the plain overlay's own template.
     cat > "$dummy_secret" <<'YAML'
 apiVersion: v1
 kind: Secret
@@ -337,10 +339,10 @@ metadata:
   name: valheim-secrets
 type: Opaque
 stringData:
-  serverPass: "DUMMY-RENDER-TEST-ONLY"
+  serverPass: ""
 YAML
 
-    if run_candidate "$renderer_var" "$overlay_dir" >/dev/null 2>"$stderr_file"; then
+    if render_with "$renderer_id" "$overlay_dir" >/dev/null 2>"$stderr_file"; then
       echo "SKIP (secret not rendered): $name — run scripts/render-secret.sh $name"
       skip=$((skip + 1))
       rm -f "$dummy_secret"
