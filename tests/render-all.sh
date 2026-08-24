@@ -118,7 +118,8 @@ cat > "$fixture_dir/kustomization.yaml" <<'YAML'
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
 components:
   - component
 labels:
@@ -127,13 +128,40 @@ labels:
     includeSelectors: true
 YAML
 
-cat > "$fixture_dir/configmap.yaml" <<'YAML'
-apiVersion: v1
-kind: ConfigMap
+# A Deployment and a Service, each with their own selector, so includeSelectors
+# has two independent places to prove it actually injected the label into —
+# not just metadata.labels, which a renderer could honour while still getting
+# includeSelectors wrong.
+cat > "$fixture_dir/deployment.yaml" <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: probe
-data:
-  key: value
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: probe
+  template:
+    metadata:
+      labels:
+        app: probe
+    spec:
+      containers:
+        - name: probe
+          image: busybox:1.36
+YAML
+
+cat > "$fixture_dir/service.yaml" <<'YAML'
+apiVersion: v1
+kind: Service
+metadata:
+  name: probe
+spec:
+  selector:
+    app: probe
+  ports:
+    - port: 80
 YAML
 
 cat > "$fixture_dir/component/kustomization.yaml" <<'YAML'
@@ -185,6 +213,48 @@ run_candidate() {
   "${cmd[@]}" "$@"
 }
 
+# A renderer can exit 0 on the fixture while silently ignoring `components:` or
+# `includeSelectors` — the exact capability being probed — so exit status alone
+# is not proof. This inspects the RENDERED OUTPUT for both:
+#   (a) the component's ConfigMap present at all, proving `components:` pulled
+#       it in;
+#   (b) the injected `probe: "true"` label present in BOTH the Deployment's
+#       spec.selector.matchLabels AND the Service's spec.selector, proving
+#       `includeSelectors: true` actually rewrote selectors and not just
+#       metadata.labels.
+# Only a candidate whose output passes both is treated as capable.
+assert_capability_output() {
+  local out="$1"
+  local split_dir
+  split_dir="$(mktemp -d)"
+  awk -v dir="$split_dir" '
+    BEGIN { n = 0; file = dir "/doc0.yaml" }
+    /^---[[:space:]]*$/ { n++; file = dir "/doc" n ".yaml"; next }
+    { print > file }
+  ' <<<"$out"
+
+  local has_configmap=0 deploy_ok=0 svc_ok=0 f
+  for f in "$split_dir"/doc*.yaml; do
+    [[ -f "$f" ]] || continue
+    if grep -q '^kind: ConfigMap$' "$f" && grep -q '^  name: probe-extra$' "$f"; then
+      has_configmap=1
+    fi
+    if grep -q '^kind: Deployment$' "$f"; then
+      if awk '/^  selector:/{f=1} /^  template:/{f=0} f' "$f" | grep -q 'probe: "true"'; then
+        deploy_ok=1
+      fi
+    fi
+    if grep -q '^kind: Service$' "$f"; then
+      if awk '/^  selector:/{f=1} f' "$f" | grep -q 'probe: "true"'; then
+        svc_ok=1
+      fi
+    fi
+  done
+  rm -rf "$split_dir"
+
+  (( has_configmap == 1 && deploy_ok == 1 && svc_ok == 1 ))
+}
+
 [[ -n "${KUSTOMIZE_BIN:-}" ]] && add_candidate "$KUSTOMIZE_BIN build" "$KUSTOMIZE_BIN" build
 command -v kustomize >/dev/null 2>&1 && add_candidate "kustomize build" kustomize build
 command -v kubectl   >/dev/null 2>&1 && add_candidate "kubectl kustomize" kubectl kustomize
@@ -198,12 +268,20 @@ probe_err=""
 renderer_var=""
 renderer_name=""
 for i in "${!candidate_names[@]}"; do
-  if err="$(run_candidate "${candidate_vars[$i]}" "$fixture_dir" 2>&1 >/dev/null)"; then
-    renderer_var="${candidate_vars[$i]}"
-    renderer_name="${candidate_names[$i]}"
-    break
+  if fixture_out="$(run_candidate "${candidate_vars[$i]}" "$fixture_dir" 2>"$stderr_file")"; then
+    if assert_capability_output "$fixture_out"; then
+      renderer_var="${candidate_vars[$i]}"
+      renderer_name="${candidate_names[$i]}"
+      break
+    fi
+    # Exited 0, but the rendered output doesn't actually show `components:` or
+    # `includeSelectors` semantics honoured — not capable, keep probing.
+    if [[ -z "$probe_err" ]]; then
+      probe_err="${candidate_names[$i]} exited 0 on the fixture, but its output failed the capability assertions (missing the component's ConfigMap, and/or the injected label missing from the Deployment's or Service's selector)."
+    fi
+    continue
   fi
-  [[ -z "$probe_err" ]] && probe_err="$err"
+  [[ -z "$probe_err" ]] && probe_err="$(cat "$stderr_file")"
 done
 
 if [[ -z "$renderer_var" ]]; then
