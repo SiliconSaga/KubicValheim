@@ -484,8 +484,20 @@ spec:
         # catches that case: it is a kube-state-metrics series keyed on the
         # Deployment object itself, which still exists (and reports 0) when the pod
         # is gone.
+        #
+        # Wrapped in `max by (namespace) (...)`: during a real outage BOTH arms are
+        # typically true at once, but they come from different metrics with
+        # different label sets (kube_deployment_status_replicas_available carries
+        # kube-state-metrics' labels; up carries the ServiceMonitor's target
+        # labels) — without the wrapper, `or` between them yields TWO distinct
+        # series/alerts for the same outage, and Alertmanager pages twice for one
+        # incident. `max by (namespace)` collapses both arms down to exactly one
+        # series per namespace (the value is always 1 when either arm fires, so
+        # `max` vs `min`/`sum` doesn't matter — only the grouping does), and that
+        # surviving series still carries `namespace`, which is all the
+        # annotations below reference.
         - alert: ValheimDown
-          expr: (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0)
+          expr: max by (namespace) ( (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0) )
           for: 3m
           labels:
             severity: critical
@@ -1105,6 +1117,14 @@ if [[ ! "$slug" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "ERROR: <slug> must be a DNS-1123 label (lowercase alphanumerics and '-', start/end alphanumeric)" >&2
   exit 1
 fi
+# Same bound scripts/start-server.sh enforces on <name>, for the same reason: the
+# default namespace below is valheim-<slug>, so an overly long slug would exceed
+# Kubernetes' 63-char namespace limit. Checking it here gives a clear error
+# instead of a confusing failure later against the API.
+if (( ${#slug} > 55 )); then
+  echo "ERROR: <slug> must be <=55 chars so the namespace valheim-<slug> stays within Kubernetes' 63-char limit" >&2
+  exit 1
+fi
 
 ns="${2:-valheim-${slug}}"
 bucket="gs://kubic-game-hosting/valheim"
@@ -1386,12 +1406,16 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
 
 **Copy and validate before destroying anything.** The order below matters: the archive is copied in and proven readable with a non-destructive `tar tzf` listing *before* the existing world is touched. If the archive is truncated or corrupt, `tar tzf` fails, the world on the PVC is still completely intact, and you can pick a different backup and try again — a bad backup costs you nothing. Only once the archive has passed that check does the world dir get cleared.
 
+**Readable is not the same as correct.** `tar tzf` proves the archive is a valid, uncorrupted tarball — it says nothing about *which world* is inside it. An archive from a different instance (wrong `<slug>`, or the right slug but grabbed from the wrong bucket path) would pass `tar tzf` cleanly, and clearing `worlds_local` and extracting it would then restore a world nobody asked for, onto an instance that no longer has its own world to fall back to. So after the readability check, also confirm the listing actually names *this* instance's world files before anything is cleared — grep it for `worlds_local/<WORLD>.db` and `worlds_local/<WORLD>.fwl`, where `<WORLD>` is the world name this instance is configured with (from its overlay's `instance-patch.yaml`, or `NAME`/`WORLD` in the running pod's env). If either is missing, **STOP** — do not proceed to the `rm -rf` below. The world on the PVC is still intact; go pick the correct archive instead.
+
 **Clear the existing saves — but only after validation.** `tar x` overwrites what the archive names and leaves everything else in place, so extracting an OLDER backup over a NEWER world strands the newer `.db` / `.fwl` / `.old` files beside the restored ones. Valheim then has two worlds in the directory and can happily load the wrong one — a restore that looks clean and isn't. Only the save dir goes; the player lists are re-copied by the init container on every start. The `ls` before the `rm` is the last chance to read what you are about to delete, and there is no undo on a PVC.
 
     ws k8s run restore-helper -n <ns> --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
     ws k8s wait pod restore-helper -n <ns> --for=condition=Ready --timeout=120s
     ws k8s cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
-    ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz
+    ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz > /tmp/restore-listing.txt
+    grep -q "worlds_local/<WORLD>.db" /tmp/restore-listing.txt
+    grep -q "worlds_local/<WORLD>.fwl" /tmp/restore-listing.txt
     ws k8s exec restore-helper -n <ns> -- ls -la /world/worlds_local
     ws k8s exec restore-helper -n <ns> -- rm -rf /world/worlds_local
     ws k8s exec restore-helper -n <ns> -- tar xzf /tmp/restore.tar.gz -C /world
@@ -1530,9 +1554,11 @@ Re-render and re-apply (Step 6) after adding it. Keep the pod's OWN node's exter
 | 11 | Backup exporter scrapes | `ws k8s exec deployment/valheim -n valheim-testbed -c backup-exporter -- wget -qO- http://127.0.0.1:9101/metrics.txt` | All four `valheim_backup_*` metrics present, `age` >= 0 |
 | 12 | Backup freshness alert | wait for a tarball timestamped at the top of an hour (`odin`'s `AUTO_BACKUP_SCHEDULE` is `0 * * * *`), then delete all tarballs in-pod **immediately after** that run, then wait >30m. *Timing matters here — see note below the table; do not delete tarballs at a random moment.* | `ValheimBackupMissing` fires, ntfy push arrives |
 | 13 | Upload marker | run the Jenkins job, then query Prometheus directly for `valheim_backup_upload_age_seconds{namespace="valheim-testbed"}` (or read the exporter endpoint in-pod as in row 11) — **not** the dashboard panel, whose query is hardcoded to `namespace="kubicvalheim"` (a known, separately-tracked deferred item) and so would show valheim7's marker during a testbed run, not the test upload | `valheim_backup_upload_age_seconds{namespace="valheim-testbed"}` drops to near 0 |
-| 14 | **IP drift alert — both halves** | **Mismatch half:** the testbed `prometheusrule-ip.yaml` created in Step 7 already carries a real, different-node `address=`; once it's applied, wait >5m. **Matching half, right after:** edit the same rule to set `address=` to the pod's OWN node's actual external IP (noted in Step 7), re-render and re-apply, then wait >5m again. Assert on the **alert**, not the dashboard, for both halves: the "Published IP valid" and "Correct IP right now" panels are hardcoded to `namespace="kubicvalheim"` (same deferred item as row 13), so during a testbed run they report valheim7's state regardless of what the testbed alert is doing. Validate the panels separately against valheim7. | **Mismatch half:** `ValheimPublishedIPDrift` fires for `namespace="valheim-testbed"` and an ntfy push arrives — proving the join correctly finds the pod's node does NOT hold the configured address. **Matching half:** with the correct node's IP configured, the alert does **NOT** fire — proving the join correctly finds a match rather than firing unconditionally. Only both halves together demonstrate the join discriminates by node; either alone is consistent with a join that always (or never) fires. Then, back on the mismatched config, scale the testbed deployment to 0 and confirm the alert **stops** firing — proving the pod-existence gate leaves pod-absence to `ValheimDown` instead of double-paging. |
+| 14 | **IP drift alert — both halves, then pod-absence** | **Mismatch half:** the testbed `prometheusrule-ip.yaml` created in Step 7 already carries a real, different-node `address=`; once it's applied, wait >5m. **Matching half, right after:** edit the same rule to set `address=` to the pod's OWN node's actual external IP (noted in Step 7), re-render and re-apply, then wait >5m again. **Revert before scale-to-zero:** edit the rule back to the mismatched node IP from Step 7, re-render and re-apply, and wait >5m for the alert to be firing again — do NOT skip this; see the note below the table for why. **Then** scale the testbed deployment to 0. Assert on the **alert**, not the dashboard, throughout: the "Published IP valid" and "Correct IP right now" panels are hardcoded to `namespace="kubicvalheim"` (same deferred item as row 13), so during a testbed run they report valheim7's state regardless of what the testbed alert is doing. Validate the panels separately against valheim7. | **Mismatch half:** `ValheimPublishedIPDrift` fires for `namespace="valheim-testbed"` and an ntfy push arrives — proving the join correctly finds the pod's node does NOT hold the configured address. **Matching half:** with the correct node's IP configured, the alert does **NOT** fire — proving the join correctly finds a match rather than firing unconditionally. Only both halves together demonstrate the join discriminates by node; either alone is consistent with a join that always (or never) fires. **Pod-absence check:** with the alert genuinely firing again on the reverted mismatched config, scaling to 0 makes the alert **stop** firing — proving the pod-existence gate leaves pod-absence to `ValheimDown` instead of double-paging. |
 
-Row 14 is worth doing on the testbed with a real, different-node IP (baked into the testbed-only rule from Step 7) rather than waiting for real drift on valheim7 — it is the only way to confirm the join expression discriminates by node before trusting it in production, and the matching-node half is the only way to confirm the alert stays quiet on a correct configuration rather than firing regardless of input. No revert is needed: the testbed overlay is gitignored and thrown away with the rest of the testbed at the end of Task 10.
+Row 14 is worth doing on the testbed with a real, different-node IP (baked into the testbed-only rule from Step 7) rather than waiting for real drift on valheim7 — it is the only way to confirm the join expression discriminates by node before trusting it in production, and the matching-node half is the only way to confirm the alert stays quiet on a correct configuration rather than firing regardless of input. No FINAL revert is needed for cleanup purposes: the testbed overlay is gitignored and thrown away with the rest of the testbed at the end of Task 10 regardless of which config it's left on. (This is separate from the MID-test revert row 14 requires below — that one is load-bearing for what the test proves, not cleanup.)
+
+**Row 14 ordering note — why the revert-before-scale-to-zero step matters:** the acceptance matrix tests the mismatch, then the matching-node case, then scales to zero to prove the alert stops. If the scale-to-zero step ran directly after the matching-node half without reverting first, the rule would still be configured with the pod's OWN correct node IP — a config on which `ValheimPublishedIPDrift` was never firing in the first place. Scaling to zero would then "pass" trivially: the alert stays quiet before AND after the scale-down, which is consistent with the pod-existence gate working, but is equally consistent with a join that's simply broken and never fires at all. The test would prove nothing about pod-absence silencing a *firing* alert. Reverting to the mismatched IP and confirming the alert is firing again — genuinely, via the alert, not the dashboard — before scaling to zero is what makes the subsequent "alert stops" observation mean anything: it demonstrates pod-absence silencing an alert that really was active, not the absence of a signal that was never there.
 
 **Row 12 timing note — do not remove as "redundant":** `AUTO_BACKUP` runs hourly at minute 0. Deleting tarballs at a random moment risks a scheduled backup landing inside the 30m `for:` window, refreshing `valheim_backup_age_seconds` and clearing the condition before `ValheimBackupMissing`'s `for: 30m` completes — failing the test even though alerting is working correctly. Deleting right after a `:00` run puts the next scheduled backup a full hour away, comfortably outside the 30m window, so the alert gets an uninterrupted 30m to fire. (Row 13's Upload marker check does not share this hazard: it manually triggers the Jenkins job and checks the metric right after, so it never waits on a schedule to clear anything.)
 
