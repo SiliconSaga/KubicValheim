@@ -155,7 +155,7 @@ scripts/start-server.sh testbed 32466 Testbed
 |---|---|---|
 | 1 | First boot | Full download, world generated |
 | 2 | **Restart** | **No 1.76GB download** — game PVC populated; boot is seconds, not ~4 min |
-| 3 | odin backup | Tarball appears in `/home/steam/backups` on the world PVC |
+| 3 | odin backup | Tarball appears in `/home/steam/backups` on the `valheim-backups` PVC |
 | 4 | Backup survives restart | Tarballs still present after pod recreate |
 | 5 | Jenkins job | Object lands at `gs://kubic-game-hosting/valheim/testbed/<ts>/` |
 | 6 | Alerting | Scale to 0 → `ValheimDown` fires → ntfy push arrives on phone |

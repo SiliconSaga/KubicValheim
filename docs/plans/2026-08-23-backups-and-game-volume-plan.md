@@ -4,11 +4,13 @@
 
 **Goal:** Give KubicValheim nightly off-cluster backups to GCS, a persistent game-files volume that eliminates the 1.76GB re-download on every restart, and phone alerting when a server goes down.
 
-**Architecture:** odin's built-in `AUTO_BACKUP` writes hourly tarballs to a mounted path on the world PVC; a nightly Jenkins job uploads the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. A second RWO PVC persists the game install. Alerting rides heimdall's existing Alertmanager→ntfy route via a `watched: "true"` PrometheusRule, unblocked by a one-line heimdall selector fix.
+**Architecture:** odin's built-in `AUTO_BACKUP` writes hourly tarballs to its own `valheim-backups` PVC; a nightly Jenkins job uploads the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. A second RWO PVC persists the game install. Alerting rides heimdall's existing Alertmanager→ntfy route via a `watched: "true"` PrometheusRule, unblocked by a one-line heimdall selector fix.
 
 **Tech Stack:** Kustomize, Kubernetes (GKE), `mbround18/valheim:3.6.0` (odin), Jenkins declarative pipeline, `gsutil`, kube-prometheus-stack (ServiceMonitor / PrometheusRule), Crossplane composition (heimdall), ntfy.
 
 **Spec:** `docs/plans/2026-08-23-backups-and-game-volume-design.md` (this repo)
+
+> **Corrected 2026-08-23 (final review).** This plan originally instructed mounting `/home/steam/backups` as a `subPath` of the world PVC (`world-data`). That layout is wrong: odin archives the whole save dir, so every hourly tarball would contain all previous tarballs, roughly doubling in size each run until the world PVC fills. The shipped design gives backups their own `valheim-backups` PVC (volume `backups-data`) instead — see `docs/plans/2026-08-23-backups-and-game-volume-design.md` §A for the full account. Every step below has been updated to reflect that corrected layout.
 
 ## Global Constraints
 
@@ -110,11 +112,12 @@ Expected: only `heimdall/*` rules. Any other namespace appearing here is now liv
 **Files:**
 - Modify: `kustomize/base/deployment.yaml`
 - Create: `kustomize/base/pvc-game.yaml`
+- Create: `kustomize/base/pvc-backups.yaml`
 - Modify: `kustomize/base/kustomization.yaml`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: PVC named `valheim-game` mounted at `/home/steam/valheim`; volume name `game-data`; a `backups` subPath mount on the existing `world-data` volume at `/home/steam/backups`. Tasks 3 and 8 depend on the backups path.
+- Produces: PVC named `valheim-game` mounted at `/home/steam/valheim`; volume name `game-data`. PVC named `valheim-backups` mounted at `/home/steam/backups`; volume name `backups-data` — its OWN claim, deliberately NOT a `subPath` of the world PVC (see Step 1b for why). Tasks 3 and 8 depend on the backups path.
 
 - [ ] **Step 1: Create the game-files PVC**
 
@@ -133,9 +136,40 @@ spec:
       storage: 10Gi
 ```
 
+- [ ] **Step 1b: Create the backups PVC**
+
+Create `kustomize/base/pvc-backups.yaml`:
+
+```yaml
+# Backups get their OWN claim, deliberately — NOT a subPath on valheim-data.
+#
+# odin archives the whole save dir (`odin backup <savedir> <file>`). If the backup
+# directory lived inside that save dir — which is exactly what mounting
+# valheim-data with `subPath: backups` at /home/steam/backups does, since
+# /home/steam/backups would then BE <savedir>/backups — every hourly tarball would
+# contain every previous tarball. Size roughly doubles per run, and with an hourly
+# AUTO_BACKUP_SCHEDULE and AUTO_BACKUP_DAYS_TO_LIVE=3 (72 retained) the world PVC
+# fills within about a day, at which point world writes start failing. Upstream's
+# own docker-compose puts /home/steam/backups on a separate volume for this reason.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valheim-backups
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+```
+
 - [ ] **Step 2: Register it in the base kustomization**
 
 In `kustomize/base/kustomization.yaml`, add `- pvc-game.yaml` to `resources:` immediately after `- pvc.yaml`.
+
+- [ ] **Step 2b: Register the backups PVC**
+
+In `kustomize/base/kustomization.yaml`, add `- pvc-backups.yaml` to `resources:` immediately after `- pvc-game.yaml`.
 
 - [ ] **Step 3: Add the Recreate strategy**
 
@@ -150,16 +184,16 @@ In `kustomize/base/deployment.yaml`, directly under `spec:` and before `replicas
     type: Recreate
 ```
 
-- [ ] **Step 4: Mount the game volume and the backups subPath**
+- [ ] **Step 4: Mount the game volume and the backups volume**
 
 In `kustomize/base/deployment.yaml`, in the `valheim-server` container's `volumeMounts:`, add:
 
 ```yaml
             - name: game-data
               mountPath: /home/steam/valheim
-            - name: world-data
+            # Own claim, NOT a subPath of world-data — see Step 1b for why.
+            - name: backups-data
               mountPath: /home/steam/backups
-              subPath: backups
 ```
 
 Then in the pod-level `volumes:` list, add:
@@ -168,13 +202,16 @@ Then in the pod-level `volumes:` list, add:
         - name: game-data
           persistentVolumeClaim:
             claimName: valheim-game
+        - name: backups-data
+          persistentVolumeClaim:
+            claimName: valheim-backups
 ```
 
 - [ ] **Step 5: Verify the render**
 
 Run: `kubectl kustomize kustomize/overlays/plain`
 
-Expected, all present: `type: Recreate`; a `PersistentVolumeClaim` named `valheim-game`; a `mountPath: /home/steam/backups` carrying `subPath: backups`; a `mountPath: /home/steam/valheim` on volume `game-data`.
+Expected, all present: `type: Recreate`; `PersistentVolumeClaim`s named `valheim-game` and `valheim-backups`; a `mountPath: /home/steam/backups` on volume `backups-data` (no `subPath`); a `mountPath: /home/steam/valheim` on volume `game-data`.
 
 - [ ] **Step 6: Commit**
 
@@ -187,12 +224,15 @@ message: "feat(kubicvalheim): persist game files and make the single-replica rol
 add:
   - kustomize/base/deployment.yaml
   - kustomize/base/pvc-game.yaml
+  - kustomize/base/pvc-backups.yaml
   - kustomize/base/kustomization.yaml
 ---
 
 The PVC only ever covered the world dir, so `/home/steam/valheim` was container-local and odin re-downloaded ~1.76GB on every restart — roughly four minutes of downtime for what should be seconds.
 
 `Recreate` is not cosmetic: with RWO volumes the default RollingUpdate starts the new pod before the old releases its disks. It has only worked so far because both pods happened to co-schedule onto one node, where a GCE PD can mount twice; a second RWO volume doubles that exposure.
+
+Backups get their own `valheim-backups` claim rather than a `subPath` of the world PVC: odin archives the whole save dir, so co-locating them would make every hourly tarball contain all previous tarballs, filling the world PVC within about a day.
 ```
 
 Run: `ws commit kubicvalheim .commits/valheim-game-volume.md`
@@ -339,9 +379,8 @@ In `kustomize/base/deployment.yaml`, add to the `containers:` list (as a sibling
             limits:
               memory: 64Mi
           volumeMounts:
-            - name: world-data
+            - name: backups-data
               mountPath: /backups
-              subPath: backups
               readOnly: true
 ```
 
@@ -471,7 +510,7 @@ spec:
             watched: "true"
           annotations:
             summary: "Valheim has NO local backups in {{ $labels.namespace }}"
-            description: "No tarballs in /home/steam/backups. Either AUTO_BACKUP is not 1, or the backups subPath is not mounted."
+            description: "No tarballs in /home/steam/backups. Either AUTO_BACKUP is not 1, or the backups-data PVC is not mounted."
         # The off-cluster half. Jenkins runs nightly, so 36h allows one missed night.
         # This is the alert that proves backups actually LEAVE the cluster — a stalled
         # upload with healthy local backups is otherwise completely invisible.
@@ -704,7 +743,7 @@ This Kustomize component remains intentionally empty (`resources: []`). Includin
 
 Backups are **not** in this component. As of 2026-08-23 they work in two halves, outside this seam:
 
-1. **odin's built-in `AUTO_BACKUP`** writes hourly tarballs to `/home/steam/backups`, which `base` mounts as a `subPath` on the world PVC. Enabled per-overlay by patching `AUTO_BACKUP="1"`.
+1. **odin's built-in `AUTO_BACKUP`** writes hourly tarballs to `/home/steam/backups`, which `base` mounts via its own `valheim-backups` PVC (deliberately NOT a `subPath` on the world PVC — odin archives the whole save dir, so co-locating them would make every tarball contain all previous ones). Enabled per-overlay by patching `AUTO_BACKUP="1"`.
 2. **A nightly Jenkins job** (`backup.Jenkinsfile` + `scripts/backup-server.sh`) uploads the newest tarball to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`, mirroring the long-running KubicArk pattern.
 
 Design: `docs/plans/2026-08-23-backups-and-game-volume-design.md`.
@@ -1211,7 +1250,7 @@ Then join the server and confirm the known object is present.
 In `README.md`, under the `## Details` section's **Backup** bullet, replace that bullet with:
 
 ```markdown
-- **Backup:** odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups` (mounted as a `subPath` on the world PVC); a nightly Jenkins job ships the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. Restore procedure: [`docs/restore.md`](docs/restore.md). The `components/backup` seam remains inert and is reserved for the Phase-3 S3-endpoint-agnostic CronJob.
+- **Backup:** odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups` (mounted via its own `valheim-backups` PVC, not a `subPath` on the world PVC); a nightly Jenkins job ships the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. Restore procedure: [`docs/restore.md`](docs/restore.md). The `components/backup` seam remains inert and is reserved for the Phase-3 S3-endpoint-agnostic CronJob.
 ```
 
 - [ ] **Step 3: Commit**
