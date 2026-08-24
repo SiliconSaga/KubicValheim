@@ -15,12 +15,38 @@ spec:
         #
         # UPDATE THE address= VALUE whenever the published IP legitimately changes
         # (and update Namecheap DNS to match).
+        #
+        # Gated with `and on() (count(...) > 0)` so this alert is scoped to "a pod
+        # exists but is on the wrong node" only. Bare absent(), unguarded, also goes
+        # true when NO valheim pod exists at all — i.e. during any ordinary outage —
+        # which would page this as a second, CRITICAL alert alongside ValheimDown,
+        # and its remediation ("check the dashboard's Correct IP right now panel")
+        # is actively misleading with no pod up to report one. Pod-absence is left
+        # entirely to ValheimDown; this alert only fires when a pod is genuinely on
+        # the wrong node. Verified by hand (promtool unavailable in this environment):
+        # absent(<join>) resolves to a single, label-less {} sample (its argument is
+        # a compound expression, not a simple selector, so absent() can't infer
+        # labels from it) valued 1 whenever the join has no match — including both
+        # "wrong node" and "no pod at all". `count(kube_pod_info{...}) > 0` is also
+        # label-less {}: present (1 sample) when a pod exists, and absent (0 samples,
+        # filtered out by `> 0`) when it doesn't. `and on()` matches both sides on
+        # the empty label set, so the result is non-empty only when BOTH operands
+        # have a sample — i.e. only when a pod exists AND the join still found no
+        # matching node/IP pair. When no pod exists, the RHS vector is empty, `and`
+        # has nothing to match against, and the whole expression evaluates to empty
+        # (no fire) regardless of what absent() alone would say.
         - alert: ValheimPublishedIPDrift
           expr: >-
-            absent(
-              kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"}
-              * on(node) group_left()
-              max by(node) (kube_pod_info{namespace="kubicvalheim", pod=~"valheim-.*"})
+            (
+              absent(
+                kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"}
+                * on(node) group_left()
+                max by(node) (kube_pod_info{namespace="kubicvalheim", pod=~"valheim-.*"})
+              )
+            )
+            and on()
+            (
+              count(kube_pod_info{namespace="kubicvalheim", pod=~"valheim-.*"}) > 0
             )
           for: 5m
           labels:
