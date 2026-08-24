@@ -113,11 +113,16 @@ Two additions:
 - **A new `PrometheusRule`**, labelled `watched: "true"`:
 
 ```
-ValheimDown       up{...} == 0 or absent(up{...})   for: 3m   severity: critical
-ValheimNotOnline  valheim_online == 0              for: 5m   severity: warning
+ValheimDown       (kube_deployment_status_replicas_available{deployment="valheim"} == 0)
+                   or (up{service="valheim-metrics", endpoint="huginn"} == 0)   for: 3m   severity: critical
+ValheimNotOnline  valheim_online == 0                                          for: 5m   severity: warning
 ```
 
-Both are needed. `up == 0` catches a dead or unreachable pod; `valheim_online == 0` catches the container being alive while the game itself is not — a state the pod-level alerts are blind to. The `absent()` arm covers the target disappearing from service discovery entirely, which plain `up == 0` cannot express.
+Both are needed. `up{..., endpoint="huginn"} == 0` catches a dead or unreachable pod; `valheim_online == 0` catches the container being alive while the game itself is not — a state the pod-level alerts are blind to.
+
+The `up` expression is scoped to `endpoint="huginn"` deliberately: `valheim-metrics` exposes **two** ports (huginn's game-status endpoint and the backup-exporter's), so a bare `up{service="valheim-metrics"}` yields two series, and the backup-exporter's busybox `httpd` daemonizing while PID 1 stays a `sleep` loop means httpd dying leaves the container Running with `up{endpoint="backups"}=0` while the game is perfectly healthy — without the scope that pages `ValheimDown` for a backup-visibility problem, not a player-facing one. The `backups` endpoint gets its own warning alert, `ValheimBackupExporterDown`, in `components/observability-backups`.
+
+**`absent()` is not used here**, even though it would seem to cover "the target disappeared from service discovery entirely." `absent()` is global: expressions in this rule deliberately carry no namespace pin (§C above / one rule covers every instance, each firing alert keeps its own `namespace` label, Alertmanager dedupes), and a global `absent(up{...})` would resolve false as soon as *any* instance is up — masking a genuinely down instance elsewhere. Multi-instance safety requires a per-instance signal instead. That signal is `kube_deployment_status_replicas_available{deployment="valheim"} == 0`: a kube-state-metrics series keyed on the Deployment object itself, which still exists (and reports 0 available) even when the pod — and with it the `huginn` scrape target — has vanished from service discovery entirely on a scale-to-zero. `up == 0` alone cannot see that case, since the series stops existing rather than going to 0; the deployment-availability arm is what closes it without reintroducing a global `absent()`.
 
 No Alertmanager change is required. The deployed config already routes `watched = "true"` to the `ntfy-watched` receiver with `repeat_interval: 1h`, pushing to the `heimdall-watched` ntfy topic — a purpose-built escape hatch for exactly this.
 

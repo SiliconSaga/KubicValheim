@@ -36,7 +36,7 @@ Must land first: until it does, any PrometheusRule shipped from kubicvalheim is 
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: a Prometheus whose `ruleSelector` renders as `{}`, so a `PrometheusRule` carrying no `release` label is evaluated. Task 4 depends on this.
+- Produces: a Prometheus whose `ruleSelector` renders as `{}`, so a `PrometheusRule` carrying no `release` label is evaluated. Tasks 4 and 4b depend on this.
 
 - [ ] **Step 1: Confirm the current live behaviour is what we think**
 
@@ -445,10 +445,14 @@ Run: `ws commit kubicvalheim .commits/valheim-backup-exporter.md`
 - Modify: `kustomize/components/observability/kustomization.yaml`
 
 **Interfaces:**
-- Consumes: Task 1's `ruleSelector: {}`; the `valheim-metrics` Service and its ServiceMonitor (already shipped).
-- Produces: alerts `ValheimDown` and `ValheimNotOnline`, each labelled `watched: "true"`.
+- Consumes: Task 1's `ruleSelector: {}`; the `valheim-metrics` Service and its ServiceMonitor (already shipped); Task 3b's `backups` endpoint (the `endpoint="huginn"` scope below only means something once that second endpoint exists).
+- Produces: alerts `ValheimDown` and `ValheimNotOnline`, each labelled `watched: "true"`. Backup alerting (`ValheimBackupStale` / `ValheimBackupMissing` / `ValheimBackupNotUploaded` / `ValheimBackupExporterDown`) is deliberately **not** here — see Task 4b. This component is unconditional (every overlay includes it), and the exporter sidecar reports `valheim_backup_age_seconds=-1` even where `AUTO_BACKUP` is off, so a backup alert here would page permanently on any no-backup overlay.
 
-**Design note on why the expressions carry no namespace:** the alerts deliberately do **not** pin a namespace. `up{service="valheim-metrics"}` already emits one series per namespace, so a single expression covers every instance and each firing alert carries its own `namespace` label. If two instances both include this component, Prometheus evaluates two identical rules and Alertmanager dedupes the identical alerts. Pinning a namespace would instead require every overlay to patch the expression string. The cost of this choice is that `absent()` cannot be used — `absent()` is global, so it would go false as soon as *any* instance is up. Whole-target-disappeared is left to the built-in `KubeDeployment*` alerts, which already route to `ntfy-workload`.
+**Design note on why the expressions carry no namespace:** the alerts deliberately do **not** pin a namespace. `up{service="valheim-metrics", endpoint="huginn"}` already emits one series per namespace, so a single expression covers every instance and each firing alert carries its own `namespace` label. If two instances both include this component, Prometheus evaluates two identical rules and Alertmanager dedupes the identical alerts. Pinning a namespace would instead require every overlay to patch the expression string.
+
+**Design note on why `up == 0` needs a second arm, and why that arm isn't `absent()`:** `absent()` is unusable here — it is global, so `absent(up{...})` would go false as soon as *any* instance of this multi-instance rule is up, masking a genuinely down instance elsewhere. But bare `up{...} == 0` has its own gap: scale the Deployment to zero and the `huginn` scrape target disappears from service discovery entirely rather than reporting 0, so the series stops existing and the expression evaluates to an empty vector — the alert never fires. `kube_deployment_status_replicas_available{deployment="valheim"} == 0` closes that gap without reintroducing a global `absent()`: it is a kube-state-metrics series keyed on the Deployment object itself, which still exists (and reports 0 available) when the pod is gone.
+
+**Design note on `endpoint="huginn"`:** `valheim-metrics` exposes TWO ports — huginn's game-status endpoint and the backup-exporter's (Task 3b) — so a bare `up{service="valheim-metrics"}` yields two series. The backup-exporter's busybox `httpd` daemonizes while PID 1 stays a `sleep` loop, so httpd dying leaves the container Running with `up{endpoint="backups"}=0` while the game is perfectly healthy. Without this scope that would page `ValheimDown` — "players cannot connect" — for a pure backup-visibility problem. The `backups` endpoint gets its own warning alert, `ValheimBackupExporterDown`, in Task 4b.
 
 - [ ] **Step 1: Write the rule**
 
@@ -466,8 +470,22 @@ spec:
     - name: valheim
       rules:
         # Scrape target down: pod gone, crashed, or unreachable.
+        # Scoped to endpoint="huginn" deliberately. valheim-metrics exposes TWO
+        # ports, so bare up{service="valheim-metrics"} yields two series — and the
+        # backup exporter's httpd daemonizes while PID 1 is a sleep loop, so httpd
+        # dying leaves the container Running with up{endpoint="backups"}=0. Without
+        # this scope that would page the phone claiming players cannot connect while
+        # the game is perfectly healthy. The backups endpoint has its own warning
+        # alert in components/observability-backups.
+        # up{...} == 0 alone is insufficient: scale the Deployment to zero and the
+        # huginn endpoint disappears from service discovery entirely, so the series
+        # stops existing rather than going to 0 — the expression returns an empty
+        # vector and the alert never fires. kube_deployment_status_replicas_available
+        # catches that case: it is a kube-state-metrics series keyed on the
+        # Deployment object itself, which still exists (and reports 0) when the pod
+        # is gone.
         - alert: ValheimDown
-          expr: up{service="valheim-metrics"} == 0
+          expr: (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0)
           for: 3m
           labels:
             severity: critical
@@ -477,7 +495,7 @@ spec:
             watched: "true"
           annotations:
             summary: "Valheim server in {{ $labels.namespace }} is DOWN"
-            description: "Huginn metrics unreachable for 3m in namespace {{ $labels.namespace }}. Players cannot connect."
+            description: "Either the valheim Deployment has zero available replicas, or Huginn metrics have been unreachable for 3m, in namespace {{ $labels.namespace }}. Players cannot connect."
         # Container alive but the game itself is not accepting players — a state
         # pod-level alerts are structurally blind to.
         - alert: ValheimNotOnline
@@ -489,6 +507,72 @@ spec:
           annotations:
             summary: "Valheim server in {{ $labels.namespace }} is not online"
             description: "Pod is running and scrapeable but valheim_online=0 for 5m in namespace {{ $labels.namespace }}."
+```
+
+- [ ] **Step 2: Register it in the component**
+
+In `kustomize/components/observability/kustomization.yaml`, add `- prometheusrule.yaml` to `resources:`.
+
+- [ ] **Step 3: Verify the render**
+
+Run: `kubectl kustomize kustomize/overlays/gitops`
+
+Expected: a `PrometheusRule` named `valheim` containing `ValheimDown` and `ValheimNotOnline`, each with `watched: "true"`, and **no** `release:` label. `ValheimDown`'s expression ORs `kube_deployment_status_replicas_available{deployment="valheim"} == 0` with `up{service="valheim-metrics", endpoint="huginn"} == 0`.
+
+- [ ] **Step 4: Commit**
+
+Write `.commits/valheim-prometheusrule.md`:
+
+```markdown
+---
+message: "feat(kubicvalheim): alert when a server goes down, routed to ntfy"
+
+add:
+  - kustomize/components/observability/prometheusrule.yaml
+  - kustomize/components/observability/kustomization.yaml
+---
+
+Two alerts, because `up{..., endpoint="huginn"} == 0` catches a dead pod while `valheim_online == 0` catches the container being alive with the game dead — pod-level alerts cannot see the second. `endpoint="huginn"` matters because the Service also carries the backup-exporter's endpoint, whose httpd dying must not page as a game outage.
+
+`up == 0` alone misses a scale-to-zero, where the huginn scrape target vanishes from service discovery rather than going to 0; `kube_deployment_status_replicas_available{deployment="valheim"} == 0` is ORed in to catch that case without needing a global `absent()`.
+
+Expressions carry no namespace on purpose: one rule covers every instance and Alertmanager dedupes duplicates. `watched: "true"` matches a receiver that already exists in heimdall's Alertmanager — no Alertmanager change needed.
+```
+
+Run: `ws commit kubicvalheim .commits/valheim-prometheusrule.md`
+
+---
+
+### Task 4b: observability-backups — split backup alerting into its own component
+
+Backup-freshness alerting is only ever true once an overlay has turned `AUTO_BACKUP` on. Base ships it off, but Task 3b's exporter sidecar runs unconditionally and reports `valheim_backup_age_seconds=-1` regardless of that setting — so if these alerts lived in the shared, unconditional `components/observability`, `ValheimBackupMissing` (`severity: critical`, `watched: "true"`, i.e. a phone push) would fire permanently, 30 minutes after every deploy, on any overlay that never enables backups. They get their own additive component instead, included only where `AUTO_BACKUP="1"` is patched on — Task 7 Step 3 already lists this component for `valheim7`.
+
+**Files:**
+- Create: `kustomize/components/observability-backups/prometheusrule-backups.yaml`
+- Create: `kustomize/components/observability-backups/kustomization.yaml`
+- Create: `kustomize/components/observability-backups/README.md`
+
+**Interfaces:**
+- Consumes: Task 3b's `valheim_backup_*` metrics; Task 8's `.last-upload` marker (via `valheim_backup_upload_age_seconds`).
+- Produces: alerts `ValheimBackupStale`, `ValheimBackupMissing`, `ValheimBackupNotUploaded`, `ValheimBackupExporterDown`, all labelled `watched: "true"`. Task 7 (`valheim7`) and Task 10 (`testbed`) both consume this component.
+
+- [ ] **Step 1: Write the rule**
+
+Create `kustomize/components/observability-backups/prometheusrule-backups.yaml`:
+
+```yaml
+# Backup alerting. Split out of components/observability because these rules are
+# only TRUE for an overlay that sets AUTO_BACKUP="1" — see this dir's README.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim-backups
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim-backups
+      rules:
         # odin's hourly AUTO_BACKUP has stopped producing. 2h allows one missed run
         # before complaining. -1 means no tarballs exist at all, which is also wrong
         # once AUTO_BACKUP is on, so the >= 0 guard is deliberately omitted for the
@@ -510,7 +594,7 @@ spec:
             watched: "true"
           annotations:
             summary: "Valheim has NO local backups in {{ $labels.namespace }}"
-            description: "No tarballs in /home/steam/backups. Either AUTO_BACKUP is not 1, or the backups-data PVC is not mounted."
+            description: "No tarballs in /home/steam/backups. Either AUTO_BACKUP is not 1, or the valheim-backups PVC is not mounted."
         # The off-cluster half. Jenkins runs nightly, so 36h allows one missed night.
         # This is the alert that proves backups actually LEAVE the cluster — a stalled
         # upload with healthy local backups is otherwise completely invisible.
@@ -523,39 +607,81 @@ spec:
           annotations:
             summary: "Valheim backups are not reaching GCS from {{ $labels.namespace }}"
             description: "No successful upload marker for over 36h (-1 means never). The nightly Jenkins job is failing or not scheduled."
+        # The backups half of the valheim-metrics Service scraping down. Explicitly
+        # NOT critical and explicitly not a game-liveness signal: only backup
+        # VISIBILITY is lost here. ValheimDown covers the game, scoped to the huginn
+        # endpoint so it never fires on this one.
+        - alert: ValheimBackupExporterDown
+          expr: up{service="valheim-metrics", endpoint="backups"} == 0
+          for: 10m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim backup exporter in {{ $labels.namespace }} is down — the GAME is unaffected"
+            description: "The backup-exporter sidecar's metrics endpoint has been unscrapeable for 10m in namespace {{ $labels.namespace }}. Players are unaffected; what is lost is visibility into whether backups are still running, so the other Valheim backup alerts are blind until it returns. Its liveness probe should restart it on its own."
 ```
 
-**Threshold note:** `129600` is 36h in seconds, chosen so a single missed nightly run does not page. `7200` is 2h, one missed hourly odin run.
+**Threshold note:** `7200` is 2h, one missed hourly odin run. `129600` is 36h in seconds, chosen so a single missed nightly Jenkins run does not page.
 
-- [ ] **Step 2: Register it in the component**
+- [ ] **Step 2: Write the component**
 
-In `kustomize/components/observability/kustomization.yaml`, add `- prometheusrule.yaml` to `resources:`.
+Create `kustomize/components/observability-backups/kustomization.yaml`:
 
-- [ ] **Step 3: Verify the render**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
 
-Run: `kubectl kustomize kustomize/overlays/gitops`
+# Backup alerting — ONLY include this from an overlay that patches AUTO_BACKUP="1".
+# Base ships AUTO_BACKUP="0"; the exporter sidecar still runs and reports
+# valheim_backup_age_seconds=-1, so on a no-backup overlay ValheimBackupMissing
+# (critical, watched) fires permanently 30 minutes after every deploy. See README.md.
+resources:
+  - prometheusrule-backups.yaml
+```
 
-Expected: a `PrometheusRule` named `valheim` containing both alerts, each with `watched: "true"`, and **no** `release:` label.
+- [ ] **Step 3: Write the README**
 
-- [ ] **Step 4: Commit**
+Create `kustomize/components/observability-backups/README.md`:
 
-Write `.commits/valheim-prometheusrule.md`:
+```markdown
+# Backup alerting component — opt in ONLY where `AUTO_BACKUP="1"`
+
+Ships one `PrometheusRule` (`valheim-backups`) carrying `ValheimBackupStale`, `ValheimBackupMissing`, `ValheimBackupNotUploaded`, and `ValheimBackupExporterDown`.
+
+> **Include this only from an overlay that patches `AUTO_BACKUP="1"`.** Base ships `AUTO_BACKUP="0"` and the `backup-exporter` sidecar runs regardless, reporting `valheim_backup_age_seconds=-1`. On an overlay without backups that makes `ValheimBackupMissing` — `severity: critical`, `watched: "true"`, so it pushes to a phone — fire permanently, 30 minutes after every deploy.
+
+Today that means `overlays/valheim7`. `overlays/gitops` and `overlays/plain` deliberately do **not** include it.
+
+## Why it is a separate component
+
+`components/observability` carries what is true for every instance: the ServiceMonitor, the dashboard, and `ValheimDown` / `ValheimNotOnline`. Backup alerting is conditional on a per-overlay env patch, so it gets its own additive component rather than a flag inside the first one — matching how the rest of this repo composes optional behaviour.
+
+Whenever a new overlay turns `AUTO_BACKUP` on, add this component alongside `components/observability` in its `components:` list.
+```
+
+- [ ] **Step 4: Verify the render**
+
+Run: `kubectl kustomize kustomize/overlays/plain`
+
+Expected: no `valheim-backups` PrometheusRule in the output — `plain` does not include this component (it is not in its `components:` list). Task 7 verifies the opposite for `valheim7`.
+
+- [ ] **Step 5: Commit**
+
+Write `.commits/valheim-backup-alerts.md`:
 
 ```markdown
 ---
-message: "feat(kubicvalheim): alert when a server goes down, routed to ntfy"
+message: "feat(kubicvalheim): split backup alerting into its own opt-in component"
 
 add:
-  - kustomize/components/observability/prometheusrule.yaml
-  - kustomize/components/observability/kustomization.yaml
+  - kustomize/components/observability-backups/
 ---
 
-Two alerts, because `up == 0` catches a dead pod while `valheim_online == 0` catches the container being alive with the game dead — pod-level alerts cannot see the second.
-
-Expressions carry no namespace on purpose: `up{service="valheim-metrics"}` already emits per-namespace series, so one rule covers every instance and Alertmanager dedupes duplicates. The cost is that `absent()` is unusable (it is global, so it goes false when any instance is up); whole-target-disappeared stays with the built-in KubeDeployment* alerts. `watched: "true"` matches a receiver that already exists in heimdall's Alertmanager — no Alertmanager change needed.
+Backup alerts are only ever true once an overlay turns AUTO_BACKUP on, but the exporter sidecar runs unconditionally and reports valheim_backup_age_seconds=-1 everywhere else — so putting them in the shared, unconditional components/observability would page ValheimBackupMissing (critical, watched) permanently on every no-backup overlay. Split into its own additive component instead, included only where AUTO_BACKUP="1" is patched on, mirroring how components/observability itself is opt-in per overlay.
 ```
 
-Run: `ws commit kubicvalheim .commits/valheim-prometheusrule.md`
+Run: `ws commit kubicvalheim .commits/valheim-backup-alerts.md`
 
 ---
 
@@ -969,6 +1095,17 @@ Create `scripts/backup-server.sh`:
 set -euo pipefail
 
 slug="${1:?usage: backup-server.sh <slug> [namespace]}"
+
+# slug is a mutable Jenkins build parameter and is interpolated straight into a
+# local filename and a gs:// path below, so it is validated BEFORE ns or any path
+# is built. Same DNS-1123-label-ish convention scripts/start-server.sh already
+# uses for its <name> argument: lowercase alphanumerics and '-', start/end
+# alphanumeric — which as a side effect also rejects '/', '..', and a leading '-'.
+if [[ ! "$slug" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+  echo "ERROR: <slug> must be a DNS-1123 label (lowercase alphanumerics and '-', start/end alphanumeric)" >&2
+  exit 1
+fi
+
 ns="${2:-valheim-${slug}}"
 bucket="gs://kubic-game-hosting/valheim"
 # A tarball older than this means odin's hourly schedule is not running. Uploading
@@ -976,7 +1113,7 @@ bucket="gs://kubic-game-hosting/valheim"
 # failure this design exists to avoid.
 max_age_seconds=10800   # 3h
 
-pod="$(kubectl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}')"
+pod="$(kubectl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 if [ -z "$pod" ]; then
   echo "ERROR: no pod with label app=valheim in namespace ${ns}" >&2
   exit 1
@@ -1003,6 +1140,10 @@ echo "Backup age ${age}s — within limit"
 
 ts="$(date +%Y%m%d-%H%M%S)"
 local_file="${slug}-${ts}.tar.gz"
+# Remove the copied archive from the Jenkins workspace after the upload attempt,
+# regardless of outcome — a trap covers both the success and failure paths (and
+# any early exit) without changing exit status or the semantics below.
+trap 'rm -f "$local_file"' EXIT
 kubectl cp -n "$ns" -c valheim-server "${pod}:${newest}" "$local_file"
 
 if [ ! -s "$local_file" ]; then
@@ -1010,6 +1151,20 @@ if [ ! -s "$local_file" ]; then
   exit 1
 fi
 echo "Copied $(stat -c %s "$local_file") bytes to ${local_file}"
+
+# Non-empty does not mean complete. Odin writes directly to the final .tar.gz
+# path — including from its shutdown hook — so a pod terminating mid-backup can
+# leave a fresh, non-empty, TRUNCATED tarball that would otherwise sail past
+# both guards above and get uploaded as the newest backup. A corrupt backup
+# that looks healthy is worse than a missing one: it would silently defeat the
+# staleness alert. `tar -tzf` decompresses and walks the whole archive, so a
+# truncated gzip stream or a cut-off tar member both fail it.
+if ! tar -tzf "$local_file" >/dev/null 2>&1; then
+  echo "ERROR: ${local_file} is corrupt or truncated (failed tar -tzf integrity check) — NOT uploaded." >&2
+  echo "  Leaving the stale-backup alert firing rather than shipping a broken archive as 'latest'." >&2
+  exit 1
+fi
+echo "Integrity check passed (tar -tzf)"
 
 gsutil cp "$local_file" "${bucket}/${slug}/${ts}/${local_file}"
 echo "Uploaded: ${bucket}/${slug}/${ts}/${local_file}"
@@ -1330,10 +1485,20 @@ Run: `ws k8s apply -f /Users/cervator/dev/git_ws/yggdrasil/.tmp/testbed.yaml -n 
 
 `prometheusrule-ip.yaml` exists only in the `valheim7` overlay, so row 14 below has nothing to edit on the testbed unless a copy is created here first.
 
+**Do not use a nonexistent address like `0.0.0.0` for the "wrong" IP.** No node has that address, so `absent()` over the join is trivially true no matter what the join expression actually does — that proves an address is absent, not that the join discriminates by node, which is the entire point of the expression. The wrong address has to be a REAL external IP that genuinely belongs to a DIFFERENT node than the one running the pod, so the alert only fires because the join correctly determined "the server's node does not hold this address."
+
+Find one:
+
+Run: `kubectl get nodes -o wide` — note the `EXTERNAL-IP` of every node.
+
+Run: `kubectl get pod -n valheim-testbed -l app=valheim -o wide` — note which node the testbed pod actually landed on.
+
+Pick a different node's `EXTERNAL-IP` from the first command's output — any node other than the one the pod is on.
+
 Copy `kustomize/overlays/valheim7/prometheusrule-ip.yaml` to `kustomize/overlays/testbed/prometheusrule-ip.yaml`, then in the copy:
 
 - Change both `namespace="kubicvalheim"` label matchers to `namespace="valheim-testbed"` (the join must match pods in the testbed namespace, not valheim7's).
-- Change `address="34.26.181.102"` to a deliberately wrong address, e.g. `address="0.0.0.0"` — this testbed rule exists purely to prove the join/alert fires, not to track a real published IP.
+- Change `address="34.26.181.102"` to the real, different-node external IP found above.
 
 Add it to `kustomize/overlays/testbed/kustomization.yaml`'s `resources:` list, the same way `valheim7/kustomization.yaml` lists it:
 
@@ -1345,7 +1510,7 @@ resources:
   - prometheusrule-ip.yaml
 ```
 
-Re-render and re-apply (Step 6) after adding it.
+Re-render and re-apply (Step 6) after adding it. Keep the pod's OWN node's external IP noted too — row 14 needs it for the matching-node half of the test.
 
 - [ ] **Step 8: Run the acceptance matrix**
 
@@ -1360,13 +1525,13 @@ Re-render and re-apply (Step 6) after adding it.
 | 7 | Alert fires | `ws k8s scale deployment valheim -n valheim-testbed --replicas=0`, wait >3m | `ValheimDown` fires; **ntfy push arrives on phone** |
 | 8 | Alert resolves | scale back to 1 | Alert clears, resolved push arrives |
 | 9 | Dashboard | open Grafana dashboard uid `kubicvalheim` | Up, players, CPU and memory each showing usage plus request/limit lines |
+| 10 | **Restore** | Cervator joins, places a known object, notes coordinates; run backup; wipe the world PVC; follow `docs/restore.md` | **The known object is present in-game.** Logs show `Load world` with **no** `missing .../Testbed.db` |
 | 11 | Backup exporter scrapes | `ws k8s exec deployment/valheim -n valheim-testbed -c backup-exporter -- wget -qO- http://127.0.0.1:9101/metrics.txt` | All four `valheim_backup_*` metrics present, `age` >= 0 |
 | 12 | Backup freshness alert | wait for a tarball timestamped at the top of an hour (`odin`'s `AUTO_BACKUP_SCHEDULE` is `0 * * * *`), then delete all tarballs in-pod **immediately after** that run, then wait >30m. *Timing matters here — see note below the table; do not delete tarballs at a random moment.* | `ValheimBackupMissing` fires, ntfy push arrives |
 | 13 | Upload marker | run the Jenkins job, then query Prometheus directly for `valheim_backup_upload_age_seconds{namespace="valheim-testbed"}` (or read the exporter endpoint in-pod as in row 11) — **not** the dashboard panel, whose query is hardcoded to `namespace="kubicvalheim"` (a known, separately-tracked deferred item) and so would show valheim7's marker during a testbed run, not the test upload | `valheim_backup_upload_age_seconds{namespace="valheim-testbed"}` drops to near 0 |
-| 14 | **IP drift alert** | the testbed `prometheusrule-ip.yaml` created in Step 7 already carries a deliberately wrong `address=`; once it's applied, wait >5m. Assert on the **alert**, not the dashboard: the "Published IP valid" and "Correct IP right now" panels are hardcoded to `namespace="kubicvalheim"` (same deferred item as row 13), so during a testbed run they report valheim7's state and would show green while the testbed alert is firing. Validate the panels separately against valheim7. | `ValheimPublishedIPDrift` fires for `namespace="valheim-testbed"` and an ntfy push arrives. Then scale the testbed deployment to 0 and confirm it **stops** firing — proving the pod-existence gate leaves pod-absence to `ValheimDown` instead of double-paging. |
-| 10 | **Restore** | Cervator joins, places a known object, notes coordinates; run backup; wipe the world PVC; follow `docs/restore.md` | **The known object is present in-game.** Logs show `Load world` with **no** `missing .../Testbed.db` |
+| 14 | **IP drift alert — both halves** | **Mismatch half:** the testbed `prometheusrule-ip.yaml` created in Step 7 already carries a real, different-node `address=`; once it's applied, wait >5m. **Matching half, right after:** edit the same rule to set `address=` to the pod's OWN node's actual external IP (noted in Step 7), re-render and re-apply, then wait >5m again. Assert on the **alert**, not the dashboard, for both halves: the "Published IP valid" and "Correct IP right now" panels are hardcoded to `namespace="kubicvalheim"` (same deferred item as row 13), so during a testbed run they report valheim7's state regardless of what the testbed alert is doing. Validate the panels separately against valheim7. | **Mismatch half:** `ValheimPublishedIPDrift` fires for `namespace="valheim-testbed"` and an ntfy push arrives — proving the join correctly finds the pod's node does NOT hold the configured address. **Matching half:** with the correct node's IP configured, the alert does **NOT** fire — proving the join correctly finds a match rather than firing unconditionally. Only both halves together demonstrate the join discriminates by node; either alone is consistent with a join that always (or never) fires. Then, back on the mismatched config, scale the testbed deployment to 0 and confirm the alert **stops** firing — proving the pod-existence gate leaves pod-absence to `ValheimDown` instead of double-paging. |
 
-Row 14 is worth doing with a deliberately wrong IP (baked into the testbed-only rule from Step 7) rather than waiting for real drift on valheim7 — it is the only way to confirm the join expression is correct before trusting it. No revert is needed: the testbed overlay is gitignored and thrown away with the rest of the testbed at the end of Task 10.
+Row 14 is worth doing on the testbed with a real, different-node IP (baked into the testbed-only rule from Step 7) rather than waiting for real drift on valheim7 — it is the only way to confirm the join expression discriminates by node before trusting it in production, and the matching-node half is the only way to confirm the alert stays quiet on a correct configuration rather than firing regardless of input. No revert is needed: the testbed overlay is gitignored and thrown away with the rest of the testbed at the end of Task 10.
 
 **Row 12 timing note — do not remove as "redundant":** `AUTO_BACKUP` runs hourly at minute 0. Deleting tarballs at a random moment risks a scheduled backup landing inside the 30m `for:` window, refreshing `valheim_backup_age_seconds` and clearing the condition before `ValheimBackupMissing`'s `for: 30m` completes — failing the test even though alerting is working correctly. Deleting right after a `:00` run puts the next scheduled backup a full hour away, comfortably outside the 30m window, so the alert gets an uninterrupted 30m to fire. (Row 13's Upload marker check does not share this hazard: it manually triggers the Jenkins job and checks the metric right after, so it never waits on a schedule to clear anything.)
 
@@ -1456,7 +1621,7 @@ Then open a CR per repo with `ws cr`, using a bodyfile from `templates/change.md
 
 **Spec coverage:** §A volumes → Task 2; §A Recreate → Task 2; §B server side → Task 3; §B Jenkins → Task 8; §B slug → Task 7; §B restore → Task 9; §C observability → Tasks 4-5, 7; §D heimdall → Task 1; §E test plan → Task 10; §F rollout → Task 11; scaffold-README contradiction → Task 6. No gaps.
 
-**Post-design additions (2026-08-23, Cervator):** two observability gaps not in the original spec. Backup freshness → new Task 3b (exporter sidecar) plus alerts in Task 4, panels in Task 5, and the upload marker in Task 8. Published-IP drift → alert in Task 7 Step 3b plus two panels in Task 5 Step 2c. Both metrics were verified to exist in the deployed kube-state-metrics before the expressions were written: `kube_node_status_addresses{type="ExternalIP"}` and `kube_pod_info` share a `node` label, which is what makes the drift join possible. A follow-up to auto-update Namecheap DNS on drift is explicitly **out of scope** for this round.
+**Post-design additions (2026-08-23, Cervator):** two observability gaps not in the original spec. Backup freshness → new Task 3b (exporter sidecar) plus alerts in Task 4b (its own opt-in component, split from the shared Task 4 rule — see Task 4b for why), panels in Task 5, and the upload marker in Task 8. Published-IP drift → alert in Task 7 Step 3b plus two panels in Task 5 Step 2c. Both metrics were verified to exist in the deployed kube-state-metrics before the expressions were written: `kube_node_status_addresses{type="ExternalIP"}` and `kube_pod_info` share a `node` label, which is what makes the drift join possible. A follow-up to auto-update Namecheap DNS on drift is explicitly **out of scope** for this round.
 
 **Deviation from spec, recorded:** the design showed the alert expressions pinned to a namespace. Task 4 drops the pin and explains why — a namespace-pinned expression in a shared Kustomize component would force every overlay to patch the expression string, and `absent()` is unusable multi-instance regardless since it is global. Per-namespace series plus Alertmanager dedup achieves the same outcome with one rule.
 
