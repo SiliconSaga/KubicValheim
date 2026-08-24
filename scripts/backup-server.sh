@@ -20,6 +20,14 @@ if [[ ! "$slug" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "ERROR: <slug> must be a DNS-1123 label (lowercase alphanumerics and '-', start/end alphanumeric)" >&2
   exit 1
 fi
+# Same bound scripts/start-server.sh enforces on <name>, for the same reason: the
+# default namespace below is valheim-<slug>, so an overly long slug would exceed
+# Kubernetes' 63-char namespace limit. Checking it here gives a clear error
+# instead of a confusing failure later against the API.
+if (( ${#slug} > 55 )); then
+  echo "ERROR: <slug> must be <=55 chars so the namespace valheim-<slug> stays within Kubernetes' 63-char limit" >&2
+  exit 1
+fi
 
 ns="${2:-valheim-${slug}}"
 bucket="gs://kubic-game-hosting/valheim"
