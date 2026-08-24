@@ -113,12 +113,16 @@ Two additions:
 - **A new `PrometheusRule`**, labelled `watched: "true"`:
 
 ```
-ValheimDown       (kube_deployment_status_replicas_available{deployment="valheim"} == 0)
-                   or (up{service="valheim-metrics", endpoint="huginn"} == 0)   for: 3m   severity: critical
+ValheimDown       max by (namespace) (
+                     (kube_deployment_status_replicas_available{deployment="valheim"} == 0)
+                     or (up{service="valheim-metrics", endpoint="huginn"} == 0)
+                   )                                                           for: 3m   severity: critical
 ValheimNotOnline  valheim_online == 0                                          for: 5m   severity: warning
 ```
 
 Both are needed. `up{..., endpoint="huginn"} == 0` catches a dead or unreachable pod; `valheim_online == 0` catches the container being alive while the game itself is not — a state the pod-level alerts are blind to.
+
+**`max by (namespace) (...)` wraps both arms of `ValheimDown` deliberately.** During a real outage both arms are typically true at once, but they come from different metrics with different label sets — `kube_deployment_status_replicas_available` carries kube-state-metrics' labels, `up` carries the ServiceMonitor's target labels — so without the wrapper, `or` between them produces two distinct series (and thus two alerts, and two pages) for one outage. `max by (namespace)` collapses that down to exactly one series per namespace; the surviving series still carries `namespace`, which is what the annotations reference, and `severity`/`watched` still come from the rule's `labels:` block, unaffected by the aggregation.
 
 The `up` expression is scoped to `endpoint="huginn"` deliberately: `valheim-metrics` exposes **two** ports (huginn's game-status endpoint and the backup-exporter's), so a bare `up{service="valheim-metrics"}` yields two series, and the backup-exporter's busybox `httpd` daemonizing while PID 1 stays a `sleep` loop means httpd dying leaves the container Running with `up{endpoint="backups"}=0` while the game is perfectly healthy — without the scope that pages `ValheimDown` for a backup-visibility problem, not a player-facing one. The `backups` endpoint gets its own warning alert, `ValheimBackupExporterDown`, in `components/observability-backups`.
 

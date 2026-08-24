@@ -23,8 +23,20 @@ spec:
         # catches that case: it is a kube-state-metrics series keyed on the
         # Deployment object itself, which still exists (and reports 0) when the pod
         # is gone.
+        #
+        # Wrapped in `max by (namespace) (...)`: during a real outage BOTH arms are
+        # typically true at once, but they come from different metrics with
+        # different label sets (kube_deployment_status_replicas_available carries
+        # kube-state-metrics' labels; up carries the ServiceMonitor's target
+        # labels) — without the wrapper, `or` between them yields TWO distinct
+        # series/alerts for the same outage, and Alertmanager pages twice for one
+        # incident. `max by (namespace)` collapses both arms down to exactly one
+        # series per namespace (the value is always 1 when either arm fires, so
+        # `max` vs `min`/`sum` doesn't matter — only the grouping does), and that
+        # surviving series still carries `namespace`, which is all the
+        # annotations below reference.
         - alert: ValheimDown
-          expr: (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0)
+          expr: max by (namespace) ( (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0) )
           for: 3m
           labels:
             severity: critical
