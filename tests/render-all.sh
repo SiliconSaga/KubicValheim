@@ -37,11 +37,10 @@ OVERLAYS_DIR="$ROOT/kustomize/overlays"
 
 # True if $2 (a kustomize stderr capture) indicates $1 (an overlay dir) failed
 # to build because its gitignored secret.yaml is missing — the ONE reason a
-# build failure gets reclassified as SKIP instead of FAIL below, and the ONE
-# reason the renderer-capability probe below treats a failure as inconclusive
-# instead of blaming the renderer. Checked two ways on purpose: the file must
-# be genuinely absent AND the error text must name it, so an unrelated error
-# that happens to mention "secret.yaml" is never misread as this case.
+# build failure gets reclassified as SKIP instead of FAIL below. Checked two
+# ways on purpose: the file must be genuinely absent AND the error text must
+# name it, so an unrelated error that happens to mention "secret.yaml" is
+# never misread as this case.
 is_missing_secret_failure() {
   local dir="$1" err="$2"
   [[ ! -f "${dir}secret.yaml" ]] && grep -qE 'secret\.yaml.*no such file or directory' <<<"$err"
@@ -55,6 +54,26 @@ if (( ${#overlay_dirs[@]} == 0 )); then
   echo "ERROR: no overlays found under $OVERLAYS_DIR" >&2
   exit 2
 fi
+
+# --- Cleanup plumbing (set up early so it also covers the fixture below) ----
+stderr_file="$(mktemp)"
+# Tracks a dummy secret.yaml currently on disk, if any, so cleanup can remove it
+# even on an early/unexpected exit. A leftover dummy secret in an overlay
+# directory would silently satisfy a real deployment with a junk password.
+dummy_secret=""
+# Tracks the synthetic renderer-capability fixture dir (see below) so cleanup
+# removes it too, on any exit path.
+fixture_dir=""
+cleanup() {
+  rm -f "$stderr_file"
+  if [[ -n "$dummy_secret" && -f "$dummy_secret" ]]; then
+    rm -f "$dummy_secret"
+  fi
+  if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
+    rm -rf "$fixture_dir"
+  fi
+}
+trap cleanup EXIT
 
 # --- Renderer selection ------------------------------------------------------
 # Pick the renderer by CAPABILITY, not by name. Hardcoding `kubectl kustomize`
@@ -71,64 +90,127 @@ fi
 #
 # Deliberately NOT parsing `kustomize version` output: the format changed
 # across releases (v3 prints a `Version: {Version:3.2.1 ...}` struct, v5
-# prints a bare `v5.8.1`), and what matters is whether it renders THIS repo,
-# not what it calls itself — so each candidate is probed by actually trying
-# to build an overlay.
+# prints a bare `v5.8.1`), and what matters is whether it renders the features
+# this repo uses, not what it calls itself — so each candidate is probed by
+# actually trying to build something that needs those features.
+#
+# Probed against a tiny SYNTHETIC fixture built in a temp dir — never against
+# a real overlay under kustomize/overlays/. Capability and repo state used to
+# be conflated here: an earlier version probed the first repo overlay
+# (alphabetically), then every repo overlay in turn skipping "inconclusive"
+# missing-secret failures. That still let ONE broken-for-real overlay that
+# happened to sort/probe first condemn every candidate renderer with "your
+# renderer is too old" — blaming tooling for what was actually one broken
+# overlay, and that overlay never got reported as FAIL. Probing a fixture that
+# this script fully controls makes the capability question independent of
+# repo state: a broken repo overlay now simply reports FAIL like any other
+# below, and "your renderer is too old" is only ever printed when it's true of
+# the fixture, which exercises exactly the two features that need modern
+# kustomize: a `kustomization.yaml` using `components:` and `labels:` (with
+# `includeSelectors`).
 #
 # Capability-probe idea adapted from SiliconSaga/xenforo-k8s, which itself
-# adapted this file. Its probe only ever tried the first overlay alphabetically
-# — fine there, but this repo's SKIP concept (above) means an overlay can
-# legitimately fail to build for a reason that says nothing about renderer
-# capability: scripts/start-server.sh gives every generated instance overlay a
-# secret.yaml entry, so an alphabetically-early generated overlay with an
-# unrendered secret would make every candidate "fail" and wrongly announce
-# "your renderer is too old" when the real cause is just an unrendered secret.
-# So here, a missing-secret failure is treated as INCONCLUSIVE about capability
-# — the probe moves on to the next overlay instead of condemning the renderer
-# — and only concludes "no working renderer" once a candidate has failed for a
-# real reason, or every overlay has been tried inconclusively.
-candidates=()
-[[ -n "${KUSTOMIZE_BIN:-}" ]] && candidates+=("$KUSTOMIZE_BIN build")
-command -v kustomize >/dev/null 2>&1 && candidates+=("kustomize build")
-command -v kubectl   >/dev/null 2>&1 && candidates+=("kubectl kustomize")
+# adapted this file.
+fixture_dir="$(mktemp -d)"
+mkdir -p "$fixture_dir/component"
 
-if (( ${#candidates[@]} == 0 )); then
+cat > "$fixture_dir/kustomization.yaml" <<'YAML'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+components:
+  - component
+labels:
+  - pairs:
+      probe: "true"
+    includeSelectors: true
+YAML
+
+cat > "$fixture_dir/configmap.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: probe
+data:
+  key: value
+YAML
+
+cat > "$fixture_dir/component/kustomization.yaml" <<'YAML'
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - extra-configmap.yaml
+YAML
+
+cat > "$fixture_dir/component/extra-configmap.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: probe-extra
+data:
+  key: value
+YAML
+
+# Candidates are bash ARRAYS (executable + args as separate elements), not
+# strings — a string candidate invoked unquoted word-splits on whitespace, so
+# a KUSTOMIZE_BIN path containing a space would be silently torn apart. Bash
+# can't nest arrays, so each candidate lives in its own uniquely-named array
+# (_cand_N), with candidate_names (display strings, resolved at add time) and
+# candidate_vars (those arrays' names) as parallel, index-aligned lists.
+# run_candidate below is the only place that turns a name back into an array,
+# via `eval` — always on a fixed variable name this script itself constructed,
+# never on external input.
+candidate_names=()
+candidate_vars=()
+_next_candidate=0
+
+add_candidate() {
+  # $1 = display name, remaining args = argv (the target dir is appended by
+  # the caller at invocation time, not stored here).
+  local disp="$1"
+  shift
+  local varname="_cand_${_next_candidate}"
+  eval "${varname}=(\"\$@\")"
+  candidate_names+=("$disp")
+  candidate_vars+=("$varname")
+  _next_candidate=$((_next_candidate + 1))
+}
+
+run_candidate() {
+  # $1 = a name from candidate_vars, remaining args appended after its argv.
+  local varname="$1"
+  shift
+  eval "local cmd=(\"\${${varname}[@]}\")"
+  "${cmd[@]}" "$@"
+}
+
+[[ -n "${KUSTOMIZE_BIN:-}" ]] && add_candidate "$KUSTOMIZE_BIN build" "$KUSTOMIZE_BIN" build
+command -v kustomize >/dev/null 2>&1 && add_candidate "kustomize build" kustomize build
+command -v kubectl   >/dev/null 2>&1 && add_candidate "kubectl kustomize" kubectl kustomize
+
+if (( ${#candidate_names[@]} == 0 )); then
   echo "ERROR: need either 'kustomize' or 'kubectl' on PATH (or KUSTOMIZE_BIN set)." >&2
   exit 2
 fi
 
 probe_err=""
-renderer=""
-for overlay_dir in "${overlay_dirs[@]}"; do
-  genuine_failure=""
-  for candidate in "${candidates[@]}"; do
-    if err="$($candidate "$overlay_dir" 2>&1 >/dev/null)"; then
-      renderer="$candidate"
-      break 2
-    fi
-    if is_missing_secret_failure "$overlay_dir" "$err"; then
-      # Inconclusive for this candidate on this overlay — try the next
-      # candidate (or, once all candidates are exhausted, the next overlay)
-      # rather than blaming the renderer.
-      continue
-    fi
-    genuine_failure=1
-    [[ -z "$probe_err" ]] && probe_err="$err"
-  done
-  # Every candidate failed on this overlay. If none of those failures were
-  # genuine (all were the inconclusive missing-secret case), a later overlay
-  # might not need a secret at all — keep looking. A genuine failure means
-  # we've learned something real about renderer capability, so stop.
-  [[ -n "$genuine_failure" ]] && break
+renderer_var=""
+renderer_name=""
+for i in "${!candidate_names[@]}"; do
+  if err="$(run_candidate "${candidate_vars[$i]}" "$fixture_dir" 2>&1 >/dev/null)"; then
+    renderer_var="${candidate_vars[$i]}"
+    renderer_name="${candidate_names[$i]}"
+    break
+  fi
+  [[ -z "$probe_err" ]] && probe_err="$err"
 done
 
-if [[ -z "$renderer" ]]; then
-  echo "ERROR: no available renderer could build any overlay under $OVERLAYS_DIR" >&2
+if [[ -z "$renderer_var" ]]; then
+  echo "ERROR: no available renderer could build a minimal test overlay (using components: and labels:)." >&2
   echo >&2
   if [[ -n "$probe_err" ]]; then
     sed 's/^/    /' <<<"$probe_err" >&2
-  else
-    echo "    (every failure was an unrendered secret.yaml — render one with scripts/render-secret.sh <name> and retry)" >&2
   fi
   if grep -qE 'unknown field "(components|labels)"' <<<"$probe_err"; then
     cat >&2 <<'EOF'
@@ -145,7 +227,7 @@ EOF
   exit 2
 fi
 
-echo "Renderer: $renderer"
+echo "Renderer: $renderer_name"
 echo
 # --- End renderer selection ---------------------------------------------------
 
@@ -153,23 +235,10 @@ pass=0
 skip=0
 fail=0
 
-stderr_file="$(mktemp)"
-# Tracks a dummy secret.yaml currently on disk, if any, so cleanup can remove it
-# even on an early/unexpected exit. A leftover dummy secret in an overlay
-# directory would silently satisfy a real deployment with a junk password.
-dummy_secret=""
-cleanup() {
-  rm -f "$stderr_file"
-  if [[ -n "$dummy_secret" && -f "$dummy_secret" ]]; then
-    rm -f "$dummy_secret"
-  fi
-}
-trap cleanup EXIT
-
 for overlay_dir in "${overlay_dirs[@]}"; do
   name="$(basename "$overlay_dir")"
 
-  if $renderer "$overlay_dir" >/dev/null 2>"$stderr_file"; then
+  if run_candidate "$renderer_var" "$overlay_dir" >/dev/null 2>"$stderr_file"; then
     echo "PASS: $name"
     pass=$((pass + 1))
     continue
@@ -193,7 +262,7 @@ stringData:
   serverPass: "DUMMY-RENDER-TEST-ONLY"
 YAML
 
-    if $renderer "$overlay_dir" >/dev/null 2>"$stderr_file"; then
+    if run_candidate "$renderer_var" "$overlay_dir" >/dev/null 2>"$stderr_file"; then
       echo "SKIP (secret not rendered): $name — run scripts/render-secret.sh $name"
       skip=$((skip + 1))
       rm -f "$dummy_secret"
