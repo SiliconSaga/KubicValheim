@@ -45,6 +45,9 @@ patches:
         path: /spec/ports/1/nodePort
         value: 32457
   # Turn on odin's scheduled backups for this instance (base ships them off).
+  # AUTO_BACKUP_ON_SHUTDOWN rides along in the same patch: the shutdown handler
+  # evaluates it independently of AUTO_BACKUP, so base leaves it off and it must
+  # be turned on wherever AUTO_BACKUP is turned on, not left to a separate patch.
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
@@ -57,4 +60,6 @@ patches:
               - name: valheim-server
                 env:
                   - name: AUTO_BACKUP
+                    value: "1"
+                  - name: AUTO_BACKUP_ON_SHUTDOWN
                     value: "1"

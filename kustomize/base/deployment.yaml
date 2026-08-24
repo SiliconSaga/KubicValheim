@@ -85,8 +85,17 @@ spec:
             # tarball" is at most an hour old whenever Jenkins happens to run.
             - name: AUTO_BACKUP_SCHEDULE
               value: "0 * * * *"
+            # Evaluated INDEPENDENTLY of AUTO_BACKUP by the pinned image's shutdown
+            # handler (`if [ "${AUTO_BACKUP_ON_SHUTDOWN:=0}" -eq 1 ]; then ... fi`) —
+            # it is its own on/off switch, not a modifier of the schedule above.
+            # Left off here on purpose: an overlay with AUTO_BACKUP="0" has no
+            # scheduled pruning (AUTO_BACKUP_REMOVE_OLD only runs on the schedule
+            # above) and no backup alerting, so if this defaulted on, every pod
+            # termination would still write a tarball that accumulates unnoticed.
+            # Overlays that opt into AUTO_BACKUP="1" flip this the same way, in the
+            # same patch (see kustomize/overlays/valheim7/kustomization.yaml).
             - name: AUTO_BACKUP_ON_SHUTDOWN
-              value: "1"
+              value: "0"
             - name: AUTO_BACKUP_REMOVE_OLD
               value: "1"
             - name: AUTO_BACKUP_DAYS_TO_LIVE
@@ -151,7 +160,15 @@ spec:
                   echo "# HELP valheim_backup_upload_age_seconds Age of the last successful off-cluster upload marker. -1 when never uploaded."
                   echo "# TYPE valheim_backup_upload_age_seconds gauge"
                   echo "valheim_backup_upload_age_seconds ${upload_age}"
-                } > /www/metrics.txt
+                } > /www/metrics.txt.tmp
+                # Atomic rename, not a truncating write: `> /www/metrics.txt` directly
+                # would truncate the file before rewriting it, and a Prometheus scrape
+                # landing during that ~60s rewrite could read an empty or partial
+                # exposition — dropping the backup series for one scrape, which resets
+                # alert `for` timers and can mask a genuine staleness condition. `mv`
+                # within the same directory (same filesystem) is atomic, so a scrape
+                # always sees either the old complete file or the new complete file.
+                mv /www/metrics.txt.tmp /www/metrics.txt
               }
               write_metrics
               httpd -p 9101 -h /www
