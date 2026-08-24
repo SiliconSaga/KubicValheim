@@ -1227,13 +1227,19 @@ Releases the RWO volumes so another pod can mount them.
 
 ## 3. Replace the world files
 
-Start a throwaway pod mounting the world PVC, copy the tarball in, and extract it over the world dir. The archive is rooted at the Valheim config dir, so extract with `-C` pointing at the mount.
+Start a throwaway pod mounting the world PVC, copy the tarball in, and extract it over the world dir. The archive is rooted at the Valheim config dir, so extract with `-C` pointing at the mount. Pod deletion isn't the same as the volume actually detaching, so if the helper pod times out waiting to become Ready, the previous attachment is probably still releasing — wait ~30s and retry rather than assuming the restore has failed.
+
+**Clear the existing saves first.** `tar x` overwrites what the archive names and leaves everything else in place, so extracting an OLDER backup over a NEWER world strands the newer `.db` / `.fwl` / `.old` files beside the restored ones. Valheim then has two worlds in the directory and can happily load the wrong one — a restore that looks clean and isn't. Only the save dir goes; the player lists are re-copied by the init container on every start.
 
     ws k8s run restore-helper -n <ns> --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
     ws k8s wait pod restore-helper -n <ns> --for=condition=Ready --timeout=120s
-    kubectl cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
+    ws k8s exec restore-helper -n <ns> -- ls -la /world/worlds_local
+    ws k8s exec restore-helper -n <ns> -- rm -rf /world/worlds_local
+    ws k8s cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
     ws k8s exec restore-helper -n <ns> -- tar xzf /tmp/restore.tar.gz -C /world
     ws k8s delete pod restore-helper -n <ns>
+
+The `ls` before the `rm` is not decoration: it is the last chance to read what you are about to delete, and there is no undo on a PVC.
 
 ## 4. Start the server
 
@@ -1320,7 +1326,28 @@ Remove the leading cluster-scoped `Namespace` document from that file (the guard
 
 Run: `ws k8s apply -f /Users/cervator/dev/git_ws/yggdrasil/.tmp/testbed.yaml -n valheim-testbed`
 
-- [ ] **Step 7: Run the acceptance matrix**
+- [ ] **Step 7: Create the testbed IP-drift rule**
+
+`prometheusrule-ip.yaml` exists only in the `valheim7` overlay, so row 14 below has nothing to edit on the testbed unless a copy is created here first.
+
+Copy `kustomize/overlays/valheim7/prometheusrule-ip.yaml` to `kustomize/overlays/testbed/prometheusrule-ip.yaml`, then in the copy:
+
+- Change both `namespace="kubicvalheim"` label matchers to `namespace="valheim-testbed"` (the join must match pods in the testbed namespace, not valheim7's).
+- Change `address="34.26.181.102"` to a deliberately wrong address, e.g. `address="0.0.0.0"` — this testbed rule exists purely to prove the join/alert fires, not to track a real published IP.
+
+Add it to `kustomize/overlays/testbed/kustomization.yaml`'s `resources:` list, the same way `valheim7/kustomization.yaml` lists it:
+
+```yaml
+resources:
+  - namespace.yaml
+  - ../../base
+  - secret.yaml
+  - prometheusrule-ip.yaml
+```
+
+Re-render and re-apply (Step 6) after adding it.
+
+- [ ] **Step 8: Run the acceptance matrix**
 
 | # | Check | How | Pass condition |
 |---|---|---|---|
@@ -1335,15 +1362,15 @@ Run: `ws k8s apply -f /Users/cervator/dev/git_ws/yggdrasil/.tmp/testbed.yaml -n 
 | 9 | Dashboard | open Grafana dashboard uid `kubicvalheim` | Up, players, CPU and memory each showing usage plus request/limit lines |
 | 11 | Backup exporter scrapes | `ws k8s exec deployment/valheim -n valheim-testbed -c backup-exporter -- wget -qO- http://127.0.0.1:9101/metrics.txt` | All four `valheim_backup_*` metrics present, `age` >= 0 |
 | 12 | Backup freshness alert | wait for a tarball timestamped at the top of an hour (`odin`'s `AUTO_BACKUP_SCHEDULE` is `0 * * * *`), then delete all tarballs in-pod **immediately after** that run, then wait >30m. *Timing matters here — see note below the table; do not delete tarballs at a random moment.* | `ValheimBackupMissing` fires, ntfy push arrives |
-| 13 | Upload marker | run the Jenkins job | `valheim_backup_upload_age_seconds` drops to near 0 and the dashboard's "Last GCS upload" panel goes green |
-| 14 | **IP drift alert** | temporarily set the overlay's `address=` to a bogus IP and apply the rule; wait >5m | `ValheimPublishedIPDrift` fires; dashboard "Published IP valid" shows red **IP DRIFT**; "Correct IP right now" shows the real node IP. Revert afterwards. |
+| 13 | Upload marker | run the Jenkins job, then query Prometheus directly for `valheim_backup_upload_age_seconds{namespace="valheim-testbed"}` (or read the exporter endpoint in-pod as in row 11) — **not** the dashboard panel, whose query is hardcoded to `namespace="kubicvalheim"` (a known, separately-tracked deferred item) and so would show valheim7's marker during a testbed run, not the test upload | `valheim_backup_upload_age_seconds{namespace="valheim-testbed"}` drops to near 0 |
+| 14 | **IP drift alert** | the testbed `prometheusrule-ip.yaml` created in Step 7 already carries a deliberately wrong `address=`; once it's applied, wait >5m | `ValheimPublishedIPDrift` fires; dashboard "Published IP valid" shows red **IP DRIFT**; "Correct IP right now" shows the real node IP. |
 | 10 | **Restore** | Cervator joins, places a known object, notes coordinates; run backup; wipe the world PVC; follow `docs/restore.md` | **The known object is present in-game.** Logs show `Load world` with **no** `missing .../Testbed.db` |
 
-Row 14 is worth doing with a deliberately wrong IP rather than waiting for real drift — it is the only way to confirm the join expression is correct before trusting it.
+Row 14 is worth doing with a deliberately wrong IP (baked into the testbed-only rule from Step 7) rather than waiting for real drift on valheim7 — it is the only way to confirm the join expression is correct before trusting it. No revert is needed: the testbed overlay is gitignored and thrown away with the rest of the testbed at the end of Task 10.
 
 **Row 12 timing note — do not remove as "redundant":** `AUTO_BACKUP` runs hourly at minute 0. Deleting tarballs at a random moment risks a scheduled backup landing inside the 30m `for:` window, refreshing `valheim_backup_age_seconds` and clearing the condition before `ValheimBackupMissing`'s `for: 30m` completes — failing the test even though alerting is working correctly. Deleting right after a `:00` run puts the next scheduled backup a full hour away, comfortably outside the 30m window, so the alert gets an uninterrupted 30m to fire. (Row 13's Upload marker check does not share this hazard: it manually triggers the Jenkins job and checks the metric right after, so it never waits on a schedule to clear anything.)
 
-- [ ] **Step 8: Report results and stop**
+- [ ] **Step 9: Report results and stop**
 
 Report each row pass/fail. Do **not** begin Task 11 without an explicit go-ahead. Rows 2, 7, and 10 are the ones that decide whether this design works at all.
 
