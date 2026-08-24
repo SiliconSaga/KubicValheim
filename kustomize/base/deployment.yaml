@@ -133,14 +133,30 @@ spec:
               mkdir -p /www
               write_metrics() {
                 now=$(date +%s)
-                newest=$(ls -1t /backups/*.tar.gz 2>/dev/null | head -1 || true)
-                if [ -n "${newest:-}" ]; then
-                  age=$(( now - $(stat -c %Y "$newest") ))
-                  size=$(stat -c %s "$newest")
-                else
-                  age=-1
-                  size=0
-                fi
+                # odin writes the tar stream directly to the FINAL .tar.gz path (no
+                # write-then-rename), so the newest-by-mtime file can be an in-progress,
+                # truncated archive for as long as odin is still writing it. Picking that
+                # one for freshness would report a fresh age/size for a backup that isn't
+                # actually complete — clearing ValheimBackupStale on a lie. Walk
+                # candidates newest-first and use the first one that actually passes
+                # `tar -tzf` (busybox tar supports this); an in-progress newest file is
+                # skipped in favor of the next-newest COMPLETE archive. The `tar -tzf`
+                # guard at upload time (scripts/backup-server.sh) catches this hours
+                # later — this is the same check, run every minute, so the metric never
+                # lies in between. Files are tens of MB, so this stays cheap even walking
+                # a few candidates.
+                age=-1
+                size=0
+                for candidate in $(ls -1t /backups/*.tar.gz 2>/dev/null); do
+                  if tar -tzf "$candidate" >/dev/null 2>&1; then
+                    age=$(( now - $(stat -c %Y "$candidate") ))
+                    size=$(stat -c %s "$candidate")
+                    break
+                  fi
+                done
+                # No candidate passed (none exist, or every one on disk is truncated):
+                # age stays -1 / size stays 0, same as "no backups at all" — this is what
+                # lets ValheimBackupMissing fire instead of a false-fresh reading.
                 count=$(ls -1 /backups/*.tar.gz 2>/dev/null | wc -l || echo 0)
                 if [ -f /backups/.last-upload ]; then
                   upload_age=$(( now - $(stat -c %Y /backups/.last-upload) ))
@@ -196,11 +212,36 @@ spec:
               memory: 16Mi
             limits:
               memory: 64Mi
+          # busybox:1.36 runs as UID 0 (root) and had no securityContext at all.
+          # runAsUser/runAsGroup are pinned to 111/1000 to match the main
+          # valheim-server container's steam user (confirmed in odin's own startup
+          # log: "STEAM_UID 111 - STEAM_GID 1000") — this sidecar only READS
+          # /backups, which the main container writes as that user, so it must
+          # keep matching UID/GID to stay able to read it. readOnlyRootFilesystem
+          # is safe here because the one thing this container writes,
+          # /www/metrics.txt(.tmp), now lives on the www-data emptyDir mounted
+          # below rather than the container's own root filesystem — emptyDir
+          # volumes are created world-writable (0777) by the kubelet, so UID 111
+          # can write there with no fsGroup needed.
+          securityContext:
+            runAsUser: 111
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           volumeMounts:
             - name: backups-data
               mountPath: /backups
               readOnly: true
+            - name: www-data
+              mountPath: /www
       volumes:
+        - name: www-data
+          emptyDir: {}
         - name: world-data
           persistentVolumeClaim:
             claimName: valheim-data
