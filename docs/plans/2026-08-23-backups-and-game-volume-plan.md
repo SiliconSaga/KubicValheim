@@ -814,6 +814,11 @@ In `kustomize/overlays/valheim7/kustomization.yaml`, add after `resources:`:
 ```yaml
 components:
   - ../../components/observability
+  # Backup-freshness alerts live in their own component because they assume
+  # AUTO_BACKUP="1". Including it here is what makes ValheimBackupMissing /
+  # ValheimBackupStale / ValheimBackupNotUploaded exist — Task 10's acceptance
+  # matrix expects them to fire, and they cannot without this line.
+  - ../../components/observability-backups
 ```
 
 And add to the `patches:` list:
@@ -1295,7 +1300,7 @@ Run: `ws exec kubicvalheim bash scripts/render-secret.sh testbed`
 
 - [ ] **Step 3: Enable observability and backups on the test overlay**
 
-Apply the same `components:` block and `AUTO_BACKUP="1"` patch as Task 7 Step 3 to `kustomize/overlays/testbed/kustomization.yaml`.
+Apply the same `components:` block and `AUTO_BACKUP="1"` patch as Task 7 Step 3 to `kustomize/overlays/testbed/kustomization.yaml`. That means **both** components — `observability` and `observability-backups`. Matrix rows 12 and 13 below test backup-freshness alerting, which does not exist without the second one.
 
 - [ ] **Step 4: Open the firewall**
 
