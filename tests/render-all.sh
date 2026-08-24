@@ -20,6 +20,14 @@
 # scripts/start-server.sh gives every generated instance overlay a secret.yaml
 # entry in `resources:`, generated overlays (the ones most likely to contain a
 # mistake) are exactly the ones a static check would blind itself to.
+#
+# A missing secret.yaml fails during kustomize's resource ACCUMULATION step, before
+# patches or manifests are even considered — so an overlay with both a missing
+# secret AND a broken patch would still build-fail on the missing secret and never
+# reach the real bug. To tell those apart, a missing-secret failure gets a second
+# build attempt with a temporary dummy secret.yaml in place: if that build
+# succeeds, it really was only the missing secret (SKIP); if it still fails, the
+# overlay is broken for a real reason (FAIL), and that second error is printed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,7 +38,17 @@ skip=0
 fail=0
 
 stderr_file="$(mktemp)"
-trap 'rm -f "$stderr_file"' EXIT
+# Tracks a dummy secret.yaml currently on disk, if any, so cleanup can remove it
+# even on an early/unexpected exit. A leftover dummy secret in an overlay
+# directory would silently satisfy a real deployment with a junk password.
+dummy_secret=""
+cleanup() {
+  rm -f "$stderr_file"
+  if [[ -n "$dummy_secret" && -f "$dummy_secret" ]]; then
+    rm -f "$dummy_secret"
+  fi
+}
+trap cleanup EXIT
 
 shopt -s nullglob
 for overlay_dir in "$OVERLAYS_DIR"/*/; do
@@ -50,8 +68,33 @@ for overlay_dir in "$OVERLAYS_DIR"/*/; do
   # secret that hasn't been rendered yet (e.g. a fresh clone) — never a guess.
   if [[ ! -f "${overlay_dir}secret.yaml" ]] \
       && grep -qE 'secret\.yaml.*no such file or directory' <<<"$build_err"; then
-    echo "SKIP (secret not rendered): $name — run scripts/render-secret.sh $name"
-    skip=$((skip + 1))
+    dummy_secret="${overlay_dir}secret.yaml"
+    cat > "$dummy_secret" <<'YAML'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: valheim-secrets
+type: Opaque
+stringData:
+  serverPass: "DUMMY-RENDER-TEST-ONLY"
+YAML
+
+    if kubectl kustomize "$overlay_dir" >/dev/null 2>"$stderr_file"; then
+      echo "SKIP (secret not rendered): $name — run scripts/render-secret.sh $name"
+      skip=$((skip + 1))
+      rm -f "$dummy_secret"
+      dummy_secret=""
+      continue
+    fi
+
+    # The overlay is broken for reasons beyond the missing secret — genuine FAIL,
+    # with the second build's error (the real one) printed instead of the first.
+    second_err="$(cat "$stderr_file")"
+    rm -f "$dummy_secret"
+    dummy_secret=""
+    echo "FAIL: $name (missing secret AND a broken build beyond that)"
+    sed 's/^/    /' <<<"$second_err"
+    fail=$((fail + 1))
     continue
   fi
 

@@ -62,7 +62,7 @@ spec:
               value: Dedicated             # overlay patches per-instance world name
             - name: PORT
               value: "2456"
-            - name: PASSWORD                # >= 5 chars, must not contain the server name
+            - name: PASSWORD                # >= 5 chars; must not appear as a substring of the server or world name
               valueFrom:
                 secretKeyRef:
                   name: valheim-secrets

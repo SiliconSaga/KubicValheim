@@ -38,12 +38,23 @@ if (( ${#VALHEIM_SERVER_PASSWORD} < 5 )); then
   exit 1
 fi
 
-# Valheim also rejects a password that appears inside the server name, which would
-# otherwise fail at runtime with a confusing error. Check it here instead.
+# Valheim also rejects a password that appears AS A SUBSTRING of the server name
+# (or the world name) — e.g. name "Shattered Vikings" with password "vikings"
+# refuses to start. That would otherwise fail at runtime with a confusing error,
+# so it is checked here instead. instance-patch.yaml lists NAME before WORLD (the
+# order scripts/start-server.sh always generates), so the first "value:" line is
+# the server name and the second is the world name.
 SERVER_NAME="$(sed -n 's/^[[:space:]]*value:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' \
   "$TARGET_DIR/instance-patch.yaml" | head -1)"
 if [[ -n "$SERVER_NAME" && "$SERVER_NAME" == *"$VALHEIM_SERVER_PASSWORD"* ]]; then
   echo "ERROR: password must not be a substring of the server name ('$SERVER_NAME')." >&2
+  exit 1
+fi
+
+WORLD_NAME="$(sed -n 's/^[[:space:]]*value:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' \
+  "$TARGET_DIR/instance-patch.yaml" | sed -n '2p')"
+if [[ -n "$WORLD_NAME" && "$WORLD_NAME" == *"$VALHEIM_SERVER_PASSWORD"* ]]; then
+  echo "ERROR: password must not be a substring of the world name ('$WORLD_NAME')." >&2
   exit 1
 fi
 

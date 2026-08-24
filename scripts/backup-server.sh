@@ -10,6 +10,17 @@
 set -euo pipefail
 
 slug="${1:?usage: backup-server.sh <slug> [namespace]}"
+
+# slug is a mutable Jenkins build parameter and is interpolated straight into a
+# local filename and a gs:// path below, so it is validated BEFORE ns or any path
+# is built. Same DNS-1123-label-ish convention scripts/start-server.sh already
+# uses for its <name> argument: lowercase alphanumerics and '-', start/end
+# alphanumeric — which as a side effect also rejects '/', '..', and a leading '-'.
+if [[ ! "$slug" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+  echo "ERROR: <slug> must be a DNS-1123 label (lowercase alphanumerics and '-', start/end alphanumeric)" >&2
+  exit 1
+fi
+
 ns="${2:-valheim-${slug}}"
 bucket="gs://kubic-game-hosting/valheim"
 # A tarball older than this means odin's hourly schedule is not running. Uploading
@@ -44,6 +55,10 @@ echo "Backup age ${age}s — within limit"
 
 ts="$(date +%Y%m%d-%H%M%S)"
 local_file="${slug}-${ts}.tar.gz"
+# Remove the copied archive from the Jenkins workspace after the upload attempt,
+# regardless of outcome — a trap covers both the success and failure paths (and
+# any early exit) without changing exit status or the semantics below.
+trap 'rm -f "$local_file"' EXIT
 kubectl cp -n "$ns" -c valheim-server "${pod}:${newest}" "$local_file"
 
 if [ ! -s "$local_file" ]; then
