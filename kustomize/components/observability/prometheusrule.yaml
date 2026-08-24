@@ -16,8 +16,15 @@ spec:
         # this scope that would page the phone claiming players cannot connect while
         # the game is perfectly healthy. The backups endpoint has its own warning
         # alert in components/observability-backups.
+        # up{...} == 0 alone is insufficient: scale the Deployment to zero and the
+        # huginn endpoint disappears from service discovery entirely, so the series
+        # stops existing rather than going to 0 — the expression returns an empty
+        # vector and the alert never fires. kube_deployment_status_replicas_available
+        # catches that case: it is a kube-state-metrics series keyed on the
+        # Deployment object itself, which still exists (and reports 0) when the pod
+        # is gone.
         - alert: ValheimDown
-          expr: up{service="valheim-metrics", endpoint="huginn"} == 0
+          expr: (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0)
           for: 3m
           labels:
             severity: critical
@@ -27,7 +34,7 @@ spec:
             watched: "true"
           annotations:
             summary: "Valheim server in {{ $labels.namespace }} is DOWN"
-            description: "Huginn metrics unreachable for 3m in namespace {{ $labels.namespace }}. Players cannot connect."
+            description: "Either the valheim Deployment has zero available replicas, or Huginn metrics have been unreachable for 3m, in namespace {{ $labels.namespace }}. Players cannot connect."
         # Container alive but the game itself is not accepting players — a state
         # pod-level alerts are structurally blind to.
         - alert: ValheimNotOnline

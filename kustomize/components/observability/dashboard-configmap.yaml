@@ -69,7 +69,8 @@ data:
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  { "color": "green", "value": null },
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
                   { "color": "orange", "value": 2 },
                   { "color": "red", "value": 4 }
                 ]
@@ -90,7 +91,8 @@ data:
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  { "color": "green", "value": null },
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
                   { "color": "orange", "value": 30 },
                   { "color": "red", "value": 36 }
                 ]
