@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: valheim-backup
+  namespace: kubicvalheim
+# NOT currently bound to anything backup.Jenkinsfile actually uses — that job runs
+# under 'utility-admin-kubeconfig-sa-token', already bound cluster-admin. This Role
+# documents least-privilege intent but doesn't enforce it at runtime yet.
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # `kubectl cp` is implemented as an exec, so it needs this too.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]

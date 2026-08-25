@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Slug `valheim7` names the overlay dir, the GCS path, and the Jenkins job.
+# The NAMESPACE is deliberately `kubicvalheim`, not `valheim-valheim7`:
+# renaming it would mean a new PVC, and `standard-rwo` has reclaimPolicy Delete,
+# so the Jotunheim world would be deleted with the old claim. Grandfathered until
+# Phase 3, where the expectation is that this instance is RESTORED into its tafl
+# home from a bucket file rather than migrated in place.
+namespace: kubicvalheim
+
+resources:
+  - namespace.yaml
+  - ../../base
+  # Generated, gitignored. `kustomize build` fails loudly if you forget to render it —
+  # which is the intended failure mode, versus silently shipping an empty password.
+  - secret.yaml
+  - prometheusrule-ip.yaml
+
+components:
+  - ../../components/observability
+  # Valid here ONLY because this overlay patches AUTO_BACKUP="1" below — on an
+  # overlay without backups these alerts fire permanently. See the component README.
+  - ../../components/observability-backups
+
+patches:
+  - path: instance-patch.yaml
+  # Node ports for this instance (game 32456, query 32457) — verified free on
+  # gke ttf-cluster (legacy valheim uses 31636-31638 / 31666-31668, ark 31001-31092).
+  # Guarded with test ops so a reorder of base/service.yaml fails loudly.
+  - target:
+      kind: Service
+      name: valheim
+    patch: |-
+      - op: test
+        path: /spec/ports/0/name
+        value: game
+      - op: replace
+        path: /spec/ports/0/nodePort
+        value: 32456
+      - op: test
+        path: /spec/ports/1/name
+        value: query
+      - op: replace
+        path: /spec/ports/1/nodePort
+        value: 32457
+  # Turn on odin's scheduled backups for this instance (base ships them off).
+  # AUTO_BACKUP_ON_SHUTDOWN rides along in the same patch: the shutdown handler
+  # evaluates it independently of AUTO_BACKUP, so base leaves it off and it must
+  # be turned on wherever AUTO_BACKUP is turned on, not left to a separate patch.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: valheim
+      spec:
+        template:
+          spec:
+            containers:
+              - name: valheim-server
+                env:
+                  - name: AUTO_BACKUP
+                    value: "1"
+                  - name: AUTO_BACKUP_ON_SHUTDOWN
+                    value: "1"

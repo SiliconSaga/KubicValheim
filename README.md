@@ -18,7 +18,9 @@ Zero extra tooling — boots with a bare kustomize apply:
 kubectl apply -k kustomize/overlays/plain
 ```
 
-Players connect at `<nodeIP>:32457` (the query port = game port + 1); allow UDP on the chosen node ports (32456-32457 for the example "midgard" instance) on the host firewall. `externalTrafficPolicy: Local` preserves player source IPs.
+Players connect at `<nodeIP>:32456` — the **game** port. Valheim's in-game *Join by IP* takes the game port, not the query port; `32457` is the Steam query/A2S port used by the server browser, and entering it in *Join by IP* fails. Allow UDP on both node ports (32456-32457 for the example "midgard" instance) on the host firewall. `externalTrafficPolicy: Local` preserves player source IPs.
+
+Verified port bindings inside the container (`/proc/net/udp`, `/proc/net/udp6`) for the pinned 3.6.0 image: **2456 game** (IPv6 dual-stack socket — it does not appear in IPv4-only listings), **2457 query** (IPv4), plus a Steam ephemeral socket. Port **2458 is not bound** by this version — older Valheim used `port+2`, which is why long-lived deployments often carry three-port firewall rules, but two is correct here.
 
 Additional instances are **data-driven** — one namespace per instance, no copy-paste:
 
@@ -51,7 +53,7 @@ scripts/start-server.sh      # data-driven per-instance overlay renderer
 
 - **Image:** `mbround18/valheim:3.6.0` (pinned, never `:latest`), with the Huginn HTTP server (`HTTP_PORT`/`PUBLIC`/`ADDRESS`) serving `/metrics` + `/status`.
 - **Player lists:** the `valheim-player-lists` ConfigMap (admin / banned / permitted) is copied into the world config dir by an init container.
-- **Backup:** the `components/backup` seam is an inert scaffold — no backup ships in Phase 1; Phase 3 fills it with an S3-endpoint-agnostic CronJob. The legacy NFS/datapod/`AUTO_BACKUP` paths are retired.
+- **Backup:** odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups` (its own `valheim-backups` PVC — deliberately not a `subPath` of the world PVC, or each tarball would contain every previous one); a nightly Jenkins job ships the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. Restore procedure: [`docs/restore.md`](docs/restore.md). The `components/backup` seam remains inert and is reserved for the Phase-3 S3-endpoint-agnostic CronJob.
 - **Architecture:** the Valheim dedicated server is x86_64-only (no ARM build), and its bundled 32-bit SteamCMD segfaults under emulation — so run it on an **amd64** host/cluster (GKE, an amd64 homelab, or a Windows/Linux amd64 box). The manifests are architecture-independent; the game binary is not.
 
 ## License

@@ -1,19 +1,20 @@
-# Backup component — inert scaffold (Phase 3 seam)
+# Backup component — still an inert scaffold (Phase 3 seam)
 
-This Kustomize component is intentionally empty. It ships **no** backup workload in Phase 1 — no CronJob, no sidecar, no credentials. Its only job is to reserve the shape and document the contract so a later phase can fill it without touching the Valheim core.
+This Kustomize component remains intentionally empty (`resources: []`). Including it is a no-op.
 
-## The contract: S3-endpoint-agnostic
+## What actually ships backups today (Phase 2)
 
-The umbrella design requires the game component to depend on an **abstract S3 endpoint**, never a specific storage engine. The backup workload (Phase 3) takes its entire configuration from env/Secret — `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` — so swapping the engine (Garage or SeaweedFS on homelab, GCS on GKE) is a Secret change, not a redesign.
+Backups are **not** in this component. As of 2026-08-23 they work in two halves, outside this seam:
 
-## Planned mechanism (Phase 3, not implemented here)
+1. **odin's built-in `AUTO_BACKUP`** writes hourly tarballs to `/home/steam/backups`, which `base` backs with its own `valheim-backups` PVC — never a `subPath` of the world PVC, since odin archives the whole save dir and would then nest every backup inside the next one. Enabled per-overlay by patching `AUTO_BACKUP="1"`.
+2. **A nightly Jenkins job** (`backup.Jenkinsfile` + `scripts/backup-server.sh`) uploads the newest tarball to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`, mirroring the long-running KubicArk pattern.
 
-A CronJob that ships the world save files from `/home/steam/.config/unity3d/IronGate/Valheim/worlds/` to the configured S3 endpoint, restorable by dropping the files back onto the PVC before the server starts.
+Design: `docs/plans/2026-08-23-backups-and-game-volume-design.md`.
 
-## Explicitly NOT the path forward
+## Why this reverses the earlier note
 
-The legacy `mbround18` `AUTO_BACKUP*` env vars and the deleted shared-NFS volume (`valheim-shared-pv-claim`, `storage-class: dynamic-nfs`) are **not** the backup strategy — they were local-only and have rotted. Off-cluster, engine-agnostic S3 is the direction.
+An earlier revision of this file named the `AUTO_BACKUP*` env vars as "explicitly NOT the path forward." That judgement was aimed at `AUTO_BACKUP` as the *entire* strategy — local-only, coupled to a shared-NFS mount that had rotted. Using it purely as the **local tarball producer**, with off-cluster shipping handled separately, is a different proposition, and it keeps the artifact file-based, which is what tafl's eventual dehydrate/rehydrate needs.
 
-## Using the seam today
+## What this seam is still for (Phase 3)
 
-Including this component in an overlay is a no-op (`resources: []` renders nothing). It exists so overlays can wire the seam early and Phase 3 can fill it in place.
+The S3-endpoint-agnostic CronJob — `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` — so the same manifests back up to Garage or SeaweedFS on homelab and GCS on GKE without a redesign. The Jenkins path above is GCS-specific and GKE-specific by construction; it is a stepping stone, not the destination.

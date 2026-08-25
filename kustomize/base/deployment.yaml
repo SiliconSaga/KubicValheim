@@ -5,6 +5,12 @@ metadata:
   labels:
     app: valheim
 spec:
+  # A single replica holding RWO volumes cannot roll: the default RollingUpdate
+  # (maxSurge 25% -> 1) starts the new pod BEFORE the old releases its disks, so
+  # the new pod blocks on multi-attach. This has only ever worked by the luck of
+  # both pods co-scheduling onto one node, where a GCE PD can mount twice.
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
@@ -13,6 +19,16 @@ spec:
     metadata:
       labels:
         app: valheim
+      annotations:
+        # A game server is a pet, not cattle (until Agones lands in Phase 4): it owns a
+        # RWO PVC and has players connected, so letting the cluster autoscaler reclaim
+        # its node mid-session means downtime AND — with NodePort + externalTrafficPolicy
+        # Local — a changed IP for every connected player. No-op on clusters without an
+        # autoscaler (k3s/RD homelab), load-bearing on GKE.
+        # NOTE: this only blocks autoscaler SCALE-DOWN. Node auto-upgrades and manual
+        # drains are voluntary evictions governed by PodDisruptionBudgets, not this
+        # annotation — graceful movement is tafl/Agones work, not solved here.
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
       # Prepare player-list files in the world config dir before the server starts.
       initContainers:
@@ -46,7 +62,7 @@ spec:
               value: Dedicated             # overlay patches per-instance world name
             - name: PORT
               value: "2456"
-            - name: PASSWORD                # >= 5 chars, must not contain the server name
+            - name: PASSWORD                # >= 5 chars; must not appear as a substring of the server or world name
               valueFrom:
                 secretKeyRef:
                   name: valheim-secrets
@@ -57,6 +73,33 @@ spec:
               value: "8080"                 # Huginn HTTP server: /metrics + /status
             - name: ADDRESS
               value: "127.0.0.1:2457"       # Huginn query target = game port + 1
+            # Backups are OFF in base; overlays opt in by patching AUTO_BACKUP="1".
+            # Requires the /home/steam/backups mount above — without it odin writes
+            # tarballs into the container and they vanish with the pod.
+            - name: AUTO_BACKUP
+              value: "0"
+            # HOURLY, deliberately, not nightly. The nightly Jenkins upload and a
+            # nightly odin backup are two schedulers that cannot see each other: a
+            # Jenkins run firing first would ship YESTERDAY's world, and the upload
+            # would still succeed, so the failure is invisible. Hourly means "newest
+            # tarball" is at most an hour old whenever Jenkins happens to run.
+            - name: AUTO_BACKUP_SCHEDULE
+              value: "0 * * * *"
+            # Evaluated INDEPENDENTLY of AUTO_BACKUP by the pinned image's shutdown
+            # handler (`if [ "${AUTO_BACKUP_ON_SHUTDOWN:=0}" -eq 1 ]; then ... fi`) —
+            # it is its own on/off switch, not a modifier of the schedule above.
+            # Left off here on purpose: an overlay with AUTO_BACKUP="0" has no
+            # scheduled pruning (AUTO_BACKUP_REMOVE_OLD only runs on the schedule
+            # above) and no backup alerting, so if this defaulted on, every pod
+            # termination would still write a tarball that accumulates unnoticed.
+            # Overlays that opt into AUTO_BACKUP="1" flip this the same way, in the
+            # same patch (see kustomize/overlays/valheim7/kustomization.yaml).
+            - name: AUTO_BACKUP_ON_SHUTDOWN
+              value: "0"
+            - name: AUTO_BACKUP_REMOVE_OLD
+              value: "1"
+            - name: AUTO_BACKUP_DAYS_TO_LIVE
+              value: "3"
           ports:
             - name: game
               containerPort: 2456
@@ -72,10 +115,142 @@ spec:
               mountPath: /home/steam/.config/unity3d/IronGate/Valheim
             - name: player-lists
               mountPath: /valheim-config
+            - name: game-data
+              mountPath: /home/steam/valheim
+            # Own claim, NOT a subPath of world-data — see pvc-backups.yaml for why.
+            - name: backups-data
+              mountPath: /home/steam/backups
+        # Exports backup freshness so "the backup process silently stopped" is
+        # visible. Serves /metrics.txt (NOT /metrics) because busybox httpd derives
+        # Content-Type from the extension — .txt yields text/plain, which Prometheus
+        # parses; an extensionless file is served as an opaque type.
+        - name: backup-exporter
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /www
+              write_metrics() {
+                now=$(date +%s)
+                # odin writes the tar stream directly to the FINAL .tar.gz path (no
+                # write-then-rename), so the newest-by-mtime file can be an in-progress,
+                # truncated archive for as long as odin is still writing it. Picking that
+                # one for freshness would report a fresh age/size for a backup that isn't
+                # actually complete — clearing ValheimBackupStale on a lie. Walk
+                # candidates newest-first and use the first one that actually passes
+                # `tar -tzf` (busybox tar supports this); an in-progress newest file is
+                # skipped in favor of the next-newest COMPLETE archive. The `tar -tzf`
+                # guard at upload time (scripts/backup-server.sh) catches this hours
+                # later — this is the same check, run every minute, so the metric never
+                # lies in between. Files are tens of MB, so this stays cheap even walking
+                # a few candidates.
+                age=-1
+                size=0
+                for candidate in $(ls -1t /backups/*.tar.gz 2>/dev/null); do
+                  if tar -tzf "$candidate" >/dev/null 2>&1; then
+                    age=$(( now - $(stat -c %Y "$candidate") ))
+                    size=$(stat -c %s "$candidate")
+                    break
+                  fi
+                done
+                # No candidate passed (none exist, or every one on disk is truncated):
+                # age stays -1 / size stays 0, same as "no backups at all" — this is what
+                # lets ValheimBackupMissing fire instead of a false-fresh reading.
+                count=$(ls -1 /backups/*.tar.gz 2>/dev/null | wc -l || echo 0)
+                if [ -f /backups/.last-upload ]; then
+                  upload_age=$(( now - $(stat -c %Y /backups/.last-upload) ))
+                else
+                  upload_age=-1
+                fi
+                {
+                  echo "# HELP valheim_backup_age_seconds Age of the newest local backup tarball. -1 when none exist."
+                  echo "# TYPE valheim_backup_age_seconds gauge"
+                  echo "valheim_backup_age_seconds ${age}"
+                  echo "# HELP valheim_backup_count Number of local backup tarballs retained."
+                  echo "# TYPE valheim_backup_count gauge"
+                  echo "valheim_backup_count ${count}"
+                  echo "# HELP valheim_backup_bytes Size of the newest local backup tarball."
+                  echo "# TYPE valheim_backup_bytes gauge"
+                  echo "valheim_backup_bytes ${size}"
+                  echo "# HELP valheim_backup_upload_age_seconds Age of the last successful off-cluster upload marker. -1 when never uploaded."
+                  echo "# TYPE valheim_backup_upload_age_seconds gauge"
+                  echo "valheim_backup_upload_age_seconds ${upload_age}"
+                } > /www/metrics.txt.tmp
+                # Atomic rename, not a truncating write: `> /www/metrics.txt` directly
+                # would truncate the file before rewriting it, and a Prometheus scrape
+                # landing during that ~60s rewrite could read an empty or partial
+                # exposition — dropping the backup series for one scrape, which resets
+                # alert `for` timers and can mask a genuine staleness condition. `mv`
+                # within the same directory (same filesystem) is atomic, so a scrape
+                # always sees either the old complete file or the new complete file.
+                mv /www/metrics.txt.tmp /www/metrics.txt
+              }
+              write_metrics
+              httpd -p 9101 -h /www
+              while true; do
+                sleep 60
+                write_metrics
+              done
+          ports:
+            - name: backups
+              containerPort: 9101
+              protocol: TCP
+          # httpd daemonizes, so PID 1 here is the sleep loop: if httpd dies the
+          # container stays Running and simply stops serving forever. This probe is
+          # what makes that self-heal. Intervals are lazy on purpose — it is a static
+          # file server, and restarting it is never urgent.
+          livenessProbe:
+            httpGet:
+              path: /metrics.txt
+              port: backups
+            periodSeconds: 60
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          # busybox:1.36 runs as UID 0 (root) and had no securityContext at all.
+          # runAsUser/runAsGroup are pinned to 111/1000 to match the main
+          # valheim-server container's steam user (confirmed in odin's own startup
+          # log: "STEAM_UID 111 - STEAM_GID 1000") — this sidecar only READS
+          # /backups, which the main container writes as that user, so it must
+          # keep matching UID/GID to stay able to read it. readOnlyRootFilesystem
+          # is safe here because the one thing this container writes,
+          # /www/metrics.txt(.tmp), now lives on the www-data emptyDir mounted
+          # below rather than the container's own root filesystem — emptyDir
+          # volumes are created world-writable (0777) by the kubelet, so UID 111
+          # can write there with no fsGroup needed.
+          securityContext:
+            runAsUser: 111
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: backups-data
+              mountPath: /backups
+              readOnly: true
+            - name: www-data
+              mountPath: /www
       volumes:
+        - name: www-data
+          emptyDir: {}
         - name: world-data
           persistentVolumeClaim:
             claimName: valheim-data
+        - name: game-data
+          persistentVolumeClaim:
+            claimName: valheim-game
+        - name: backups-data
+          persistentVolumeClaim:
+            claimName: valheim-backups
         - name: player-lists
           projected:
             sources:

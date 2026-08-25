@@ -43,7 +43,8 @@ data:
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
           "targets": [
-            { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"kubicvalheim\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" }
+            { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"kubicvalheim\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"kubicvalheim\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" }
           ]
         },
         {
@@ -53,7 +54,84 @@ data:
           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
           "fieldConfig": { "defaults": { "unit": "bytes" } },
           "targets": [
-            { "expr": "sum(container_memory_working_set_bytes{namespace=\"kubicvalheim\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" }
+            { "expr": "sum(container_memory_working_set_bytes{namespace=\"kubicvalheim\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" },
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"kubicvalheim\", container=\"valheim-server\", resource=\"memory\"})", "refId": "B", "legendFormat": "request" },
+            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"kubicvalheim\", container=\"valheim-server\", resource=\"memory\"})", "refId": "C", "legendFormat": "limit" }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Backup age (hours)",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 14 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
+                  { "color": "orange", "value": 2 },
+                  { "color": "red", "value": 4 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_age_seconds{namespace=\"kubicvalheim\"}) / 3600", "refId": "A" }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Last GCS upload (hours)",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 14 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
+                  { "color": "orange", "value": 30 },
+                  { "color": "red", "value": 36 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_upload_age_seconds{namespace=\"kubicvalheim\"}) / 3600", "refId": "A" }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Published IP valid",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 14 },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "IP DRIFT", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "count(kube_node_status_addresses{type=\"ExternalIP\", address=\"34.26.181.102\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})) or vector(0)", "refId": "A" }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Correct IP right now",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
+          "options": { "textMode": "name" },
+          "targets": [
+            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})", "refId": "A", "legendFormat": "{{address}}" }
           ]
         }
       ]

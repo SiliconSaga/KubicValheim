@@ -1,0 +1,60 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim
+      rules:
+        # Scrape target down: pod gone, crashed, or unreachable.
+        # Scoped to endpoint="huginn" deliberately. valheim-metrics exposes TWO
+        # ports, so bare up{service="valheim-metrics"} yields two series — and the
+        # backup exporter's httpd daemonizes while PID 1 is a sleep loop, so httpd
+        # dying leaves the container Running with up{endpoint="backups"}=0. Without
+        # this scope that would page the phone claiming players cannot connect while
+        # the game is perfectly healthy. The backups endpoint has its own warning
+        # alert in components/observability-backups.
+        # up{...} == 0 alone is insufficient: scale the Deployment to zero and the
+        # huginn endpoint disappears from service discovery entirely, so the series
+        # stops existing rather than going to 0 — the expression returns an empty
+        # vector and the alert never fires. kube_deployment_status_replicas_available
+        # catches that case: it is a kube-state-metrics series keyed on the
+        # Deployment object itself, which still exists (and reports 0) when the pod
+        # is gone.
+        #
+        # Wrapped in `max by (namespace) (...)`: during a real outage BOTH arms are
+        # typically true at once, but they come from different metrics with
+        # different label sets (kube_deployment_status_replicas_available carries
+        # kube-state-metrics' labels; up carries the ServiceMonitor's target
+        # labels) — without the wrapper, `or` between them yields TWO distinct
+        # series/alerts for the same outage, and Alertmanager pages twice for one
+        # incident. `max by (namespace)` collapses both arms down to exactly one
+        # series per namespace (the value is always 1 when either arm fires, so
+        # `max` vs `min`/`sum` doesn't matter — only the grouping does), and that
+        # surviving series still carries `namespace`, which is all the
+        # annotations below reference.
+        - alert: ValheimDown
+          expr: max by (namespace) ( (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0) )
+          for: 3m
+          labels:
+            severity: critical
+            # Routes to the ntfy-watched receiver -> heimdall-watched topic.
+            # This matcher already exists in heimdall's Alertmanager config;
+            # no Alertmanager change is needed to get a phone push.
+            watched: "true"
+          annotations:
+            summary: "Valheim server in {{ $labels.namespace }} is DOWN"
+            description: "Either the valheim Deployment has zero available replicas, or Huginn metrics have been unreachable for 3m, in namespace {{ $labels.namespace }}. Players cannot connect."
+        # Container alive but the game itself is not accepting players — a state
+        # pod-level alerts are structurally blind to.
+        - alert: ValheimNotOnline
+          expr: valheim_online == 0
+          for: 5m
+          labels:
+            severity: warning
+            watched: "true"
+          annotations:
+            summary: "Valheim server in {{ $labels.namespace }} is not online"
+            description: "Pod is running and scrapeable but valheim_online=0 for 5m in namespace {{ $labels.namespace }}."
