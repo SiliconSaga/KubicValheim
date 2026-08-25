@@ -1413,7 +1413,9 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
     ws k8s run restore-helper -n <ns> --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
     ws k8s wait pod restore-helper -n <ns> --for=condition=Ready --timeout=120s
     ws k8s cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
-    ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz | sed 's#^\./##' > /tmp/restore-listing.txt
+    ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz > /tmp/restore-listing-raw.txt
+    echo "tar exit status: $?"    # MUST be 0 — if not, STOP, the archive is bad
+    sed 's#^\./##' /tmp/restore-listing-raw.txt > /tmp/restore-listing.txt
     grep -Fqx -- "worlds_local/<WORLD>.db"  /tmp/restore-listing.txt
     grep -Fqx -- "worlds_local/<WORLD>.fwl" /tmp/restore-listing.txt
     ws k8s exec restore-helper -n <ns> -- ls -la /world/worlds_local

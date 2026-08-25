@@ -27,6 +27,8 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
 
 **Readable is not the same as correct.** `tar tzf` proves the archive is a valid, uncorrupted tarball — it says nothing about *which world* is inside it. An archive from a different instance (wrong `<slug>`, or the right slug but grabbed from the wrong bucket path) would pass `tar tzf` cleanly, and clearing `worlds_local` and extracting it would then restore a world nobody asked for, onto an instance that no longer has its own world to fall back to. So after the readability check, also confirm the listing actually names *this* instance's world files before anything is cleared — grep it for `worlds_local/<WORLD>.db` and `worlds_local/<WORLD>.fwl`, where `<WORLD>` is the world name this instance is configured with (from its overlay's `instance-patch.yaml`, or `NAME`/`WORLD` in the running pod's env). If either is missing, **STOP** — do not proceed to the `rm -rf` below. The world on the PVC is still intact; go pick the correct archive instead.
 
+**Keep `tar tzf` on its own line — do not pipe it into `sed`.** A pipeline's exit status is the *last* command's, so `tar tzf … | sed …` reports `sed`'s success and silently swallows a tar failure. A truncated archive that manages to list the world files before it dies would then satisfy both greps below, and the `rm -rf` would go ahead against a corrupt backup. Running tar on its own line keeps its exit status visible, and it must be `0` before you continue.
+
 **Match those names exactly — `grep -Fqx`, not `grep -q`.** A plain `grep -q` treats the world name as a *regular expression* and matches *substrings*, which in this specific procedure is a data-loss bug: a world configured as `World.1` would have its `.` match any character and its pattern match as a substring, so a wrong archive containing `WorldX1.db` would satisfy the check, the `rm -rf` would delete the correct save, and the wrong world would be extracted over it. `-F` takes the pattern literally, `-x` requires the whole line to match, and the `sed` normalises the optional leading `./` that some tar implementations emit so a whole-line match still lands.
 
 **Clear the existing saves — but only after validation.** `tar x` overwrites what the archive names and leaves everything else in place, so extracting an OLDER backup over a NEWER world strands the newer `.db` / `.fwl` / `.old` files beside the restored ones. Valheim then has two worlds in the directory and can happily load the wrong one — a restore that looks clean and isn't. Only the save dir goes; the player lists are re-copied by the init container on every start. The `ls` before the `rm` is the last chance to read what you are about to delete, and there is no undo on a PVC.
@@ -34,7 +36,9 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
     ws k8s run restore-helper -n <ns> --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
     ws k8s wait pod restore-helper -n <ns> --for=condition=Ready --timeout=120s
     ws k8s cp <slug>-<ts>.tar.gz <ns>/restore-helper:/tmp/restore.tar.gz
-    ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz | sed 's#^\./##' > /tmp/restore-listing.txt
+    ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz > /tmp/restore-listing-raw.txt
+    echo "tar exit status: $?"    # MUST be 0 — if not, STOP, the archive is bad
+    sed 's#^\./##' /tmp/restore-listing-raw.txt > /tmp/restore-listing.txt
     grep -Fqx -- "worlds_local/<WORLD>.db"  /tmp/restore-listing.txt
     grep -Fqx -- "worlds_local/<WORLD>.fwl" /tmp/restore-listing.txt
     ws k8s exec restore-helper -n <ns> -- ls -la /world/worlds_local
