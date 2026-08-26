@@ -89,8 +89,16 @@ if ! tar -tzf "$local_file" >/dev/null 2>&1; then
 fi
 echo "Integrity check passed (tar -tzf)"
 
-gsutil cp "$local_file" "${bucket}/${slug}/${ts}/${local_file}"
-echo "Uploaded: ${bucket}/${slug}/${ts}/${local_file}"
+gs_path="${bucket}/${slug}/${ts}/${local_file}"
+gsutil cp "$local_file" "$gs_path"
+echo "Uploaded: ${gs_path}"
+
+# The bucket is public (allUsers: roles/storage.objectViewer) so players can grab
+# their own world archive directly — but a gs:// URI is useless to them; it only
+# means anything to gcloud/gsutil. Derive the HTTPS form from the same $bucket and
+# path pieces used above (never a second hardcoded copy) so the two can't drift.
+https_path="https://storage.googleapis.com/${gs_path#gs://}"
+echo "Shareable link (public bucket): ${https_path}"
 
 # Touch the marker the backup-exporter sidecar reads, ONLY after a confirmed upload.
 # This is what makes `valheim_backup_upload_age_seconds` mean "backups are actually
