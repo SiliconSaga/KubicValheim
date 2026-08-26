@@ -130,6 +130,15 @@ The `up` expression is scoped to `endpoint="huginn"` deliberately: `valheim-metr
 
 No Alertmanager change is required. The deployed config already routes `watched = "true"` to the `ntfy-watched` receiver with `repeat_interval: 1h`, pushing to the `heimdall-watched` ntfy topic — a purpose-built escape hatch for exactly this.
 
+> **2026-08-25 update:** this section predates the published-IP drift alert (added
+> as a post-design addition — see the note near the end of the companion plan doc).
+> That alert was originally built against `externalTrafficPolicy: Local`, joining
+> the published IP to whichever node the pod was currently on. The Service has
+> since moved to `externalTrafficPolicy: Cluster` — any node answers, so the pod's
+> node is no longer load-bearing — and the alert was simplified to a plain
+> `absent()` on the published address. See the plan doc's Step 3b / Step 2c notes
+> and `kustomize/overlays/valheim7/prometheusrule-ip.yaml` for the current state.
+
 ## D. heimdall dependency
 
 The `PrometheusRule` above cannot be discovered as written, because heimdall's Prometheus sets:

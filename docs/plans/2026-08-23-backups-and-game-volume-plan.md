@@ -781,6 +781,14 @@ And one for the off-cluster half:
 
 - [ ] **Step 2c: Add the IP drift panels — the red box**
 
+> **2026-08-25 update:** written under `externalTrafficPolicy: Local`. The second
+> panel below ("Correct IP right now") answered "which node is the pod on" — moot
+> once the Service moved to `Cluster`, since any node works. It was repurposed to
+> "Usable node IPs", listing every current node's external IP via
+> `kube_node_status_addresses{type="ExternalIP"}` with no join. The first panel's
+> query dropped the join too, keeping the `or vector(0)` idiom. See
+> `kustomize/components/observability/dashboard-configmap.yaml` for the current panels.
+
 Two panels. The first is the red box: `1` green means the published IP is correct, `0` red means drift.
 
 ```json
@@ -981,6 +989,17 @@ And add to the `patches:` list:
 - [ ] **Step 3b: Add the published-IP drift alert**
 
 This alert pins a specific IP and namespace, so it lives in the **overlay**, not the shared component.
+
+> **2026-08-25 update — superseded by the `Cluster` traffic-policy change.** This
+> step was written when the Service used `externalTrafficPolicy: Local`, so the
+> paragraph below (and the node-matching join in the rule it produced) describe
+> that world. The Service now uses `externalTrafficPolicy: Cluster` instead — the
+> legacy servers on this cluster already used `Cluster`, `Local`'s source-IP
+> preservation bought nothing since Valheim's admin/ban lists are SteamID-based,
+> and `Local` is what let a GKE node roll take the server offline. Under `Cluster`
+> the pod's node no longer matters, so the join below is gone: the rule is a plain
+> `absent(kube_node_status_addresses{...})` on the published address. See
+> `kustomize/overlays/valheim7/prometheusrule-ip.yaml` for the current rule.
 
 Under `externalTrafficPolicy: Local` only the node running the pod answers on the NodePort. If the pod moves, or the node's external IP changes on recycle, the address players use goes dead while everything in-cluster still looks perfectly healthy. Nothing else detects this.
 
