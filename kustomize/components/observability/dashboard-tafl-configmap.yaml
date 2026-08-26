@@ -115,11 +115,43 @@ data:
           ]
         },
         {
+          "id": 8,
+          "title": "Published IP drift",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+          "description": "Reads the ValheimPublishedIPDrift ALERT rather than re-testing the published address. The retired per-instance dashboard hardcoded the IP, which made it a third copy of a fact that lives in the overlay's rule and in Namecheap — and after the 2026-08-24 node roll it showed a permanent red while the server was perfectly reachable. Driving the panel from the alert means the panel and the page can never disagree. 0 is healthy; 1 means the address no longer belongs to any node.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "count(ALERTS{alertname=~\"Valheim.*PublishedIPDrift\", alertstate=\"firing\"}) or vector(0)", "refId": "A" }
+          ]
+        },
+        {
+          "id": 9,
+          "title": "Usable node IPs",
+          "type": "table",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 6 },
+          "description": "Every node ExternalIP in the cluster — the answer to 'what do I repoint DNS at?' when drift fires. Under externalTrafficPolicy: Cluster ANY of these serves the NodePort, so every row is a valid choice; pick one and update BOTH the A record and the overlay's rule. Deliberately not filtered by $namespace: node addresses are cluster-wide and do not belong to an instance.",
+          "targets": [
+            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"}", "refId": "A", "instant": true, "format": "table" }
+          ]
+        },
+        {
           "id": 4,
           "title": "Players Online",
           "type": "timeseries",
           "description": "History, not just a current count — shows joins/leaves over time rather than a single point-in-time number.",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
           "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true } } },
           "targets": [
             { "expr": "max(valheim_current_player_count{namespace=\"$namespace\"})", "refId": "A", "legendFormat": "players" }
@@ -129,7 +161,7 @@ data:
           "id": 5,
           "title": "CPU (cores)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
           "targets": [
             { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
             { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" },
@@ -140,7 +172,7 @@ data:
           "id": 6,
           "title": "Memory (working set)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
           "fieldConfig": { "defaults": { "unit": "bytes" } },
           "targets": [
             { "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" },
@@ -154,7 +186,7 @@ data:
           "type": "logs",
           "datasource": { "type": "loki", "uid": "${datasource}" },
           "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player.",
-          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 22 },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
           "options": {
             "showTime": true,
             "showLabels": false,
