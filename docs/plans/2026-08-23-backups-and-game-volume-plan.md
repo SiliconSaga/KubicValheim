@@ -1,5 +1,14 @@
 # KubicValheim Backups + Game Volume Implementation Plan
 
+> **HISTORICAL — EXECUTED AND SUPERSEDED. Do not follow these steps.** This plan was carried out in August 2026; it is kept as the record of what was intended and why, not as a runbook. Several procedures below were deliberately reversed by the work that followed and would now be wrong to apply:
+>
+> - `externalTrafficPolicy: Local` and the pod-node join in the IP-drift rule and dashboard panels — replaced by `Cluster` plus a plain `absent()` (gated on kube-state-metrics reporting), because `Local` broke connectivity whenever the pod rescheduled.
+> - The address `34.26.181.102` throughout — that node was destroyed in the 2026-08-24 roll. The published address is now `play.terasology.org` → `34.75.63.41`, and it lives in `kustomize/overlays/valheim7/prometheusrule-ip.yaml`.
+> - `kustomize/components/observability/dashboard-configmap.yaml` — retired; its surviving panels were folded into `dashboard-tafl-configmap.yaml` (uid `tafl-valheim`), the multi-instance successor.
+> - The restore procedure's `rm -rf` before extraction — replaced by staged rename, verification, and rollback. See `docs/restore.md`.
+>
+> For current behaviour read the manifests and `docs/restore.md`, which are the sources of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give KubicValheim nightly off-cluster backups to GCS, a persistent game-files volume that eliminates the 1.76GB re-download on every restart, and phone alerting when a server goes down.

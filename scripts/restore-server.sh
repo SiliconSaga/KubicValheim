@@ -110,6 +110,25 @@ case "$archive_ref" in
     exit 1
     ;;
 esac
+
+# Bind the archive to THIS instance. The world-name checks below are not an
+# instance identity check: the base default world is "Dedicated", so two
+# instances can legitimately share a world name, and an archive taken from one
+# would then pass every file check and be written over the other. backup-server.sh
+# always uploads to <bucket>/valheim/<slug>/<ts>/, so requiring that prefix makes
+# the slug — which also names the job that runs this — the thing that decides
+# which saves are eligible.
+expected_prefix="gs://kubic-game-hosting/valheim/${slug}/"
+case "$gs_uri" in
+  "$expected_prefix"*) ;;
+  *)
+    echo "ERROR: archive does not belong to instance '${slug}'." >&2
+    echo "  expected a path under: ${expected_prefix}" >&2
+    echo "  got:                   ${gs_uri}" >&2
+    echo "  Restoring another instance's archive would overwrite this world with a stranger's." >&2
+    exit 1
+    ;;
+esac
 echo "Archive: ${gs_uri}"
 
 # Cleanup plumbing set up before anything is created, with the tracked
@@ -126,29 +145,62 @@ destructive_started=0
 helper="restore-helper"
 prev_replicas=""
 
+# One definition of the helper pod, used by the main flow AND by rollback —
+# recovery may need a helper even when the original one has died, which is the
+# case that makes a naive rollback silently do nothing.
+helper_overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
+
+start_helper() {
+  # Pod deletion isn't the same as the volume actually detaching, so a leftover
+  # helper from a prior failed attempt is removed first rather than assumed gone.
+  kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=true
+  kctl run "$helper" -n "$ns" --image=busybox:1.36 --restart=Never --overrides="$helper_overrides"
+  kctl wait pod "$helper" -n "$ns" --for=condition=Ready --timeout=120s
+}
+
 cleanup() {
   status=$?
   rm -f "$local_file" "$listing_raw" "$listing_norm"
   if [ "$destructive_started" -eq 0 ] || [ "$status" -eq 0 ]; then
     return 0
   fi
-  # Everything below is best-effort and must not mask the original failure:
-  # a rollback that itself fails should still report the real exit status.
   echo "" >&2
-  echo "RESTORE FAILED (exit ${status}) — rolling back." >&2
-  # Put the previous world back if it was staged aside but never replaced.
+  echo "RESTORE FAILED (exit ${status}) — attempting rollback." >&2
+
+  # The helper may itself be the thing that died. Rolling back requires one, so
+  # recreate it rather than exec'ing into a pod that may not exist — an exec
+  # into a dead helper fails silently, and the old code then restarted Valheim
+  # with worlds_local MOVED AWAY, which makes Valheim generate a fresh empty
+  # world: the precise silent data loss this script exists to prevent.
+  if ! kctl exec "$helper" -n "$ns" -- true >/dev/null 2>&1; then
+    echo "  helper pod unusable — recreating it to complete rollback" >&2
+    start_helper >/dev/null 2>&1 || true
+  fi
+
   kctl exec "$helper" -n "$ns" -- sh -c \
     'if [ -d /world/worlds_local.rollback ]; then rm -rf /world/worlds_local; mv /world/worlds_local.rollback /world/worlds_local; fi' \
     >/dev/null 2>&1 || true
-  kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-  # Bring the server back up. Leaving it at zero replicas turns a failed
-  # restore into an outage, which is a strictly worse outcome than the state
-  # we started from.
-  if [ -n "$prev_replicas" ]; then
-    kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
-    echo "Rolled back: previous world restored, helper removed, replicas back to ${prev_replicas}." >&2
+
+  # VERIFY before restarting. Restoring replicas is only safe once the world is
+  # actually back; doing it unconditionally converts a failed restore into a
+  # silently-new world, which is worse than staying down.
+  if kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'" >/dev/null 2>&1; then
+    kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    if [ -n "$prev_replicas" ]; then
+      kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
+      echo "  ROLLED BACK: ${world}.db verified in place, replicas restored to ${prev_replicas}." >&2
+      echo "  The world on the PVC is the one you started with. Re-run once the cause is understood." >&2
+    fi
+  else
+    # Deliberately leave the Deployment at zero and the helper alive. A stopped
+    # server is loud and recoverable; a running server on a missing world starts
+    # generating a new one and overwrites the evidence.
+    echo "  ROLLBACK INCOMPLETE — ${world}.db is NOT in place." >&2
+    echo "  Deployment deliberately LEFT AT 0 REPLICAS so Valheim cannot start and generate a new world." >&2
+    echo "  The helper pod '${helper}' has been left running with the PVC mounted; inspect it:" >&2
+    echo "    kubectl --context ${KUBE_CONTEXT} exec ${helper} -n ${ns} -- ls -la /world /world/worlds_local /world/worlds_local.rollback" >&2
+    echo "  Recover from a known-good archive before scaling back up." >&2
   fi
-  echo "Re-run once the cause is understood; the world on the PVC is the one you started with." >&2
 }
 trap cleanup EXIT
 
@@ -239,15 +291,10 @@ kctl wait pod -l app=valheim -n "$ns" --for=delete --timeout=180s
 echo "Pod gone — volumes released"
 
 # --- 6. Helper pod: stage the old world aside, extract, verify, swap -------
-# Pod deletion isn't the same as the volume actually detaching, so a leftover
-# helper from a prior failed attempt is removed first rather than assumed gone.
-kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=true
-
-kctl run "$helper" -n "$ns" --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
-# If this Ready wait times out, the previous attachment is probably still
-# releasing (see docs/restore.md) — rerun the job rather than assuming the
-# restore itself has failed; nothing destructive has happened yet.
-kctl wait pod "$helper" -n "$ns" --for=condition=Ready --timeout=120s
+# If the Ready wait inside start_helper times out, the previous attachment is
+# probably still releasing (see docs/restore.md) — rerun the job rather than
+# assuming the restore itself has failed; nothing destructive has happened yet.
+start_helper
 
 kctl cp "$local_file" "${ns}/${helper}:/tmp/restore.tar.gz"
 

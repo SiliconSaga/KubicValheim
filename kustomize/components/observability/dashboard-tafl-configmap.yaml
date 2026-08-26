@@ -134,14 +134,14 @@ data:
             }
           },
           "targets": [
-            { "expr": "count(ALERTS{alertname=~\"Valheim.*PublishedIPDrift\", alertstate=\"firing\"}) or vector(0)", "refId": "A" }
+            { "expr": "count(ALERTS{alertname=~\"Valheim.*PublishedIPDrift\", alertstate=\"firing\", namespace=\"$namespace\"}) or vector(0)", "refId": "A" }
           ]
         },
         {
           "id": 9,
           "title": "Usable node IPs",
           "type": "table",
-          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 6 },
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 32 },
           "description": "Every node ExternalIP in the cluster — the answer to 'what do I repoint DNS at?' when drift fires. Under externalTrafficPolicy: Cluster ANY of these serves the NodePort, so every row is a valid choice; pick one and update BOTH the A record and the overlay's rule. Deliberately not filtered by $namespace: node addresses are cluster-wide and do not belong to an instance.",
           "targets": [
             { "expr": "kube_node_status_addresses{type=\"ExternalIP\"}", "refId": "A", "instant": true, "format": "table" }
@@ -152,7 +152,7 @@ data:
           "title": "Players Online",
           "type": "timeseries",
           "description": "History, not just a current count — shows joins/leaves over time rather than a single point-in-time number.",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
           "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true } } },
           "targets": [
             { "expr": "max(valheim_current_player_count{namespace=\"$namespace\"})", "refId": "A", "legendFormat": "players" }
@@ -162,7 +162,7 @@ data:
           "id": 5,
           "title": "CPU (cores)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
           "targets": [
             { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
             { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" },
@@ -173,7 +173,7 @@ data:
           "id": 6,
           "title": "Memory (working set)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
           "fieldConfig": { "defaults": { "unit": "bytes" } },
           "targets": [
             { "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" },
@@ -187,7 +187,7 @@ data:
           "type": "logs",
           "datasource": { "type": "loki", "uid": "${datasource}" },
           "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player.",
-          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
           "options": {
             "showTime": true,
             "showLabels": false,
