@@ -74,12 +74,21 @@ sed 's#^\./##' "$listing" > "$norm"
 # The live worlds: worlds_local/<name>.db, excluding Valheim's own .db.old
 # rotation and odin's timestamped autobackup copies. Those are the same world
 # wearing a decorated name and would make one world look like several.
+# Valheim keeps its own point-in-time copies beside the live world, under BOTH
+# `<World>_backup_auto-<ts>` (odin's schedule) and `<World>_backup_<ts>` (manual
+# and version-upgrade saves). Matching only the first form made a real legacy
+# archive report three "worlds" when it held one — the copies are loadable, so
+# they are not wrong exactly, but presenting them as peers of the live world
+# buries the single answer this command exists to give. Filtering on `_backup_`
+# catches both, and the copies are reported separately below as what they are:
+# restore points.
+#
 # awk, not `grep -v`: grep exits 1 when it selects nothing, and under
 # `set -euo pipefail` that aborts the script right here — so an archive holding
-# ONLY autobackup copies, or no worlds at all, would die silently instead of
-# reaching the "(none)" branch below that exists to explain exactly that case.
-# awk exits 0 on empty output, keeping the diagnostic reachable.
-worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk 'index($0, "_backup_auto-") == 0' | sort -u)"
+# ONLY backup copies, or no worlds at all, would die silently instead of
+# reaching the "(none)" branch that exists to explain exactly that case.
+worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk 'index($0, "_backup_") == 0' | sort -u)"
+backup_copies="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk 'index($0, "_backup_") > 0' | sort -u)"
 
 echo
 echo "=== Worlds in this archive ==="
@@ -100,6 +109,19 @@ EOF
   echo "world name — set WORLD in the overlay's instance-patch.yaml — then run the"
   echo "restore job against this archive. A server configured for any other name will"
   echo "ignore these files and generate an empty world instead."
+fi
+
+if [ -n "$backup_copies" ]; then
+  echo
+  echo "=== Point-in-time copies also inside this archive ==="
+  echo "  (Valheim's own backups of the world above — NOT separate worlds. Each is a"
+  echo "   loadable save, so any of them can be revived by naming it as WORLD.)"
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    echo "  ${b}"
+  done <<EOF
+$backup_copies
+EOF
 fi
 
 echo

@@ -268,8 +268,11 @@ sed 's#^\./##' "$listing_raw" > "$listing_norm"
 # `set -euo pipefail` that aborts here — so an archive containing no live worlds
 # would kill the script instead of reaching the "found: no worlds at all" error
 # below, which is precisely the message that case needs. awk exits 0 on empty.
+# `_backup_` (not just `_backup_auto-`) because Valheim writes point-in-time
+# copies under BOTH that and a plain `<World>_backup_<ts>` form; matching only
+# one made a real legacy archive report three worlds where it held one.
 archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
-  | awk 'index($0, "_backup_auto-") == 0' | sort -u | tr '\n' ' ')"
+  | awk 'index($0, "_backup_") == 0' | sort -u | tr '\n' ' ')"
 echo "Worlds present in archive: ${archive_worlds:-(none)}"
 
 if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm" \
