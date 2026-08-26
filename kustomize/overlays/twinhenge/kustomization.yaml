@@ -1,0 +1,67 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Slug `twinhenge` names the overlay dir, the namespace, the GCS path, and the
+# Jenkins jobs. The world is `twinhenge` too — deliberately renamed during the
+# 2026-08-26 migration off the legacy `valheim-server-6` StatefulSet, where it
+# was the image default `Dedicated`. Every legacy instance that never set WORLD
+# shared that name, which left nothing distinguishing one server's archive from
+# another's; Valheim identifies a world by filename, so the rename was simply
+# renaming the .db/.fwl pair inside the migration archive.
+namespace: valheim-twinhenge
+
+resources:
+  - namespace.yaml
+  - ../../base
+  # Generated, gitignored. `kustomize build` fails loudly if you forget to render
+  # it — the intended failure mode, versus silently shipping an empty password.
+  - secret.yaml
+  - prometheusrule-ip.yaml
+
+components:
+  - ../../components/observability
+  # Valid here ONLY because this overlay patches AUTO_BACKUP="1" below — on an
+  # overlay without backups these alerts fire permanently. See the component README.
+  - ../../components/observability-backups
+
+patches:
+  - path: instance-patch.yaml
+  # JSON6902 by index, GUARDED with test ops asserting the port names, so a reorder
+  # of base/service.yaml's port list fails the build loudly instead of silently
+  # patching the wrong port. (Strategic-merge on Service ports doesn't reliably
+  # match by the port field alone, so the guarded-index form is used instead.)
+  - target:
+      kind: Service
+      name: valheim
+    patch: |-
+      - op: test
+        path: /spec/ports/0/name
+        value: game
+      - op: replace
+        path: /spec/ports/0/nodePort
+        value: 32476
+      - op: test
+        path: /spec/ports/1/name
+        value: query
+      - op: replace
+        path: /spec/ports/1/nodePort
+        value: 32477
+  # Turn on odin's scheduled backups for this instance (base ships them off).
+  # AUTO_BACKUP_ON_SHUTDOWN rides along in the same patch: the shutdown handler
+  # evaluates it independently of AUTO_BACKUP, so base leaves it off and it must
+  # be turned on wherever AUTO_BACKUP is turned on, not left to a separate patch.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: valheim
+      spec:
+        template:
+          spec:
+            containers:
+              - name: valheim-server
+                env:
+                  - name: AUTO_BACKUP
+                    value: "1"
+                  - name: AUTO_BACKUP_ON_SHUTDOWN
+                    value: "1"

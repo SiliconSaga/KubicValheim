@@ -1,0 +1,47 @@
+# Published-IP drift for the twinhenge instance.
+#
+# twinhenge shares the play.terasology.org A record with valheim7 and is
+# distinguished only by port (32476 game / 32477 query, versus valheim7's
+# 32456/32457) — which is the whole reason base uses externalTrafficPolicy:
+# Cluster. So both instances watch the SAME address, and a node roll that
+# invalidates it breaks both; each alerts for its own namespace so the pages say
+# which servers are affected.
+#
+# WHEN THE PUBLISHED IP CHANGES, update BOTH this file and valheim7's, along with
+# the A record itself. Grep the component for the old address — it appears in
+# each overlay's rule and in the Tafl dashboard's context.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim-published-ip
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim-published-ip
+      rules:
+        # The `and on()` guard is load-bearing, not decoration. A bare absent()
+        # is also true when kube-state-metrics is down, because then EVERY
+        # node-address series disappears — so a telemetry outage would raise a
+        # critical, watched-tier page claiming the published IP had drifted, and
+        # the runbook it points at says "repoint DNS", which would be actively
+        # wrong. Requiring at least one ExternalIP series to exist means the rule
+        # fires only when the exporter is reporting AND this specific address is
+        # missing from what it reports.
+        - alert: ValheimPublishedIPDrift
+          expr: >-
+            absent(kube_node_status_addresses{type="ExternalIP", address="34.75.63.41"})
+            and on() (count(kube_node_status_addresses{type="ExternalIP"}) > 0)
+          for: 5m
+          labels:
+            severity: critical
+            watched: "true"
+            # Static label, because the expression cannot produce one: absent()
+            # over a cluster-global metric yields only the matcher's labels, so
+            # this alert carries no namespace of its own. Without it the fleet
+            # dashboard's drift panel — which reads ALERTS — could not tell which
+            # instance a firing alert belonged to.
+            namespace: valheim-twinhenge
+          annotations:
+            summary: "twinhenge: play.terasology.org points at 34.75.63.41, which is no longer any node's external IP"
+            description: "34.75.63.41 does not belong to any current node — it was likely destroyed in a node roll, so play.terasology.org:32476 resolves to nothing players can reach. Repoint the A record at any current node's external IP and update every overlay's rule to match; under externalTrafficPolicy: Cluster any node serves the NodePort."
