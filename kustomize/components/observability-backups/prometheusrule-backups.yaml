@@ -40,7 +40,16 @@ spec:
             description: "Newest local backup is {{ $value | humanizeDuration }} old. odin AUTO_BACKUP_SCHEDULE is hourly, so this means it has stopped running."
         - alert: ValheimBackupMissing
           expr: valheim_backup_age_seconds == -1
-          for: 30m
+          # 90m, NOT 30m. A freshly deployed instance legitimately has no backups
+          # until odin's first scheduled run, and AUTO_BACKUP_SCHEDULE is hourly on
+          # the hour — so a deploy at :01 waits 59 minutes for its first tarball
+          # while the exporter correctly reports -1 the whole time. At 30m that is
+          # a guaranteed critical page on the watched tier for a healthy server,
+          # every single deploy, which is precisely how a real alert gets muted.
+          # 90m clears the worst case with margin. The cost is slower detection of
+          # genuinely-absent backups, which is acceptable: "no backups at all" is a
+          # slow-burn data-loss exposure, not a minutes-matter outage.
+          for: 90m
           labels:
             severity: critical
             # The one backup alert that KEEPS `watched`. No backups existing at all
