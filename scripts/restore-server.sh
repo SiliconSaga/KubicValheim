@@ -111,22 +111,34 @@ case "$archive_ref" in
     ;;
 esac
 
-# Bind the archive to THIS instance. The world-name checks below are not an
-# instance identity check: the base default world is "Dedicated", so two
-# instances can legitimately share a world name, and an archive taken from one
-# would then pass every file check and be written over the other. backup-server.sh
-# always uploads to <bucket>/valheim/<slug>/<ts>/, so requiring that prefix makes
-# the slug — which also names the job that runs this — the thing that decides
-# which saves are eligible.
-expected_prefix="gs://kubic-game-hosting/valheim/${slug}/"
+# ANY readable archive is accepted, deliberately. Restoring one instance's
+# backup onto a different instance is a SUPPORTED workflow, not an accident:
+# someone spinning up a fresh server to revive an old world pastes the public
+# link to that world's zip, and the whole point of publishing those links is
+# that they can be used. An earlier revision required the archive to sit under
+# this instance's own <bucket>/valheim/<slug>/ prefix, which made that
+# impossible — it optimised against a narrow mix-up and blocked the feature.
+#
+# What still protects a live world, and is enough:
+#   - the archive must CONTAIN worlds_local/<world>.db and .fwl (step 4), so a
+#     restore cannot quietly replace a world with an unrelated one;
+#   - the live Deployment must already be running <world> (step 4b), so the
+#     target has to be the instance you named;
+#   - KUBE_CONTEXT must be explicit, so it is the cluster you named;
+#   - the old world is staged aside and only dropped once the new one verifies.
+#
+# The residual risk is narrow and accepted: two instances configured with the
+# SAME world name (the base default is "Dedicated") can be restored across, since
+# nothing then distinguishes them. Name worlds distinctly if that matters to you.
+# A cross-instance restore is called out below rather than blocked, because the
+# operator should know which of the two things they are doing.
 case "$gs_uri" in
-  "$expected_prefix"*) ;;
+  "gs://kubic-game-hosting/valheim/${slug}/"*) ;;
   *)
-    echo "ERROR: archive does not belong to instance '${slug}'." >&2
-    echo "  expected a path under: ${expected_prefix}" >&2
-    echo "  got:                   ${gs_uri}" >&2
-    echo "  Restoring another instance's archive would overwrite this world with a stranger's." >&2
-    exit 1
+    echo "NOTE: this archive is not one of instance '${slug}'s own backups." >&2
+    echo "  ${gs_uri}" >&2
+    echo "  Proceeding — cross-instance restore is supported. The world-name and" >&2
+    echo "  live-instance checks below still have to pass." >&2
     ;;
 esac
 echo "Archive: ${gs_uri}"
