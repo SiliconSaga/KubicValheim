@@ -40,9 +40,13 @@ spec:
           for: 3m
           labels:
             severity: critical
-            # Routes to the ntfy-watched receiver -> heimdall-watched topic.
-            # This matcher already exists in heimdall's Alertmanager config;
-            # no Alertmanager change is needed to get a phone push.
+            # heimdall matches `watched = "true"` on its FIRST route, ahead of
+            # severity, sending this to the ntfy-watched receiver -> the
+            # heimdall-watched topic at ntfy priority 4 (heads-up popup, and
+            # deliberately not 5, so it does not pierce Do Not Disturb). Because
+            # that route wins outright, `severity` above affects only inhibition,
+            # not delivery. Both labels are already understood by heimdall's
+            # Alertmanager config — no change needed there to get a phone push.
             watched: "true"
           annotations:
             summary: "Valheim server in {{ $labels.namespace }} is DOWN"
@@ -53,6 +57,11 @@ spec:
           expr: valheim_online == 0
           for: 5m
           labels:
+            # `warning` rather than `critical` because the pod is healthy, but
+            # `watched` is still right: players cannot join a server that is not
+            # online, so the player-facing impact is the same as ValheimDown. See
+            # observability-backups/prometheusrule-backups.yaml for why `watched`
+            # tracks player impact rather than operator concern.
             severity: warning
             watched: "true"
           annotations:

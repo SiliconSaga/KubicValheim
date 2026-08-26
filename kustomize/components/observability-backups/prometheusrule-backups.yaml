@@ -1,5 +1,19 @@
 # Backup alerting. Split out of components/observability because these rules are
 # only TRUE for an overlay that sets AUTO_BACKUP="1" — see this dir's README.
+#
+# On the `watched` label in this file: heimdall routes on `watched = "true"` FIRST,
+# ahead of severity, into the heimdall-watched topic at ntfy priority 4 — its
+# meaning is "a service we explicitly watch is DOWN", i.e. players are affected.
+# Because that route wins outright, a `watched` label makes `severity` irrelevant
+# to both routing and priority. So `watched` here is a statement about PLAYER
+# IMPACT, not about how much the operator cares.
+#
+# Only ValheimBackupMissing carries it: no backups at all is an ongoing data-loss
+# exposure for the world players are building in. The other three are backup
+# *plumbing* faults with a healthy world and a running game, so they fall through
+# to the heimdall-info tier (priority 2) — visible when scrolled, never a popup.
+# Reaching for `watched` to mean "important" is how every alert ends up at tier 4
+# and the tier stops meaning anything.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -18,8 +32,9 @@ spec:
           expr: valheim_backup_age_seconds > 7200
           for: 10m
           labels:
+            # No `watched`: odin has stopped producing, but the world is intact and
+            # players are unaffected. Routes to heimdall-info.
             severity: warning
-            watched: "true"
           annotations:
             summary: "Valheim backups have stalled in {{ $labels.namespace }}"
             description: "Newest local backup is {{ $value | humanizeDuration }} old. odin AUTO_BACKUP_SCHEDULE is hourly, so this means it has stopped running."
@@ -28,6 +43,10 @@ spec:
           for: 30m
           labels:
             severity: critical
+            # The one backup alert that KEEPS `watched`. No backups existing at all
+            # is a standing data-loss exposure on the world players are building in
+            # — a single bad restore or PVC loss is then unrecoverable. Worth a
+            # popup even though the game itself is up.
             watched: "true"
           annotations:
             summary: "Valheim has NO local backups in {{ $labels.namespace }}"
@@ -39,8 +58,9 @@ spec:
           expr: valheim_backup_upload_age_seconds > 129600 or valheim_backup_upload_age_seconds == -1
           for: 30m
           labels:
+            # No `watched`: local backups still exist, so the world is recoverable
+            # from inside the cluster. Routes to heimdall-info.
             severity: warning
-            watched: "true"
           annotations:
             summary: "Valheim backups are not reaching GCS from {{ $labels.namespace }}"
             description: "No successful upload marker for over 36h (-1 means never). The nightly Jenkins job is failing or not scheduled."
@@ -52,8 +72,10 @@ spec:
           expr: up{service="valheim-metrics", endpoint="backups"} == 0
           for: 10m
           labels:
+            # No `watched`. This is the clearest case in the file: the alert's own
+            # summary says the GAME is unaffected, so routing it to the "a watched
+            # service is down" tier contradicted the text players would never feel.
             severity: warning
-            watched: "true"
           annotations:
             summary: "Valheim backup exporter in {{ $labels.namespace }} is down — the GAME is unaffected"
             description: "The backup-exporter sidecar's metrics endpoint has been unscrapeable for 10m in namespace {{ $labels.namespace }}. Players are unaffected; what is lost is visibility into whether backups are still running, so the other Valheim backup alerts are blind until it returns. Its liveness probe should restart it on its own."
