@@ -20,7 +20,16 @@ set -euo pipefail
 archive_ref="${1:?usage: inspect-archive.sh <gs://... | https://storage.googleapis.com/... | local file>}"
 
 work=""
-cleanup() { [ -n "$work" ] && rm -rf "$work"; }
+# NOT `[ -n "$work" ] && rm -rf "$work"`. For a local-file argument $work stays
+# empty, the test is false, the && short-circuits, and the function returns 1 —
+# which an EXIT trap propagates as the script's exit status. Inspecting a local
+# archive would then report failure while having worked perfectly. An explicit
+# `if` keeps the trap's status independent of whether there was anything to clean.
+cleanup() {
+  if [ -n "$work" ]; then
+    rm -rf "$work"
+  fi
+}
 trap cleanup EXIT
 
 case "$archive_ref" in
@@ -65,7 +74,12 @@ sed 's#^\./##' "$listing" > "$norm"
 # The live worlds: worlds_local/<name>.db, excluding Valheim's own .db.old
 # rotation and odin's timestamped autobackup copies. Those are the same world
 # wearing a decorated name and would make one world look like several.
-worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | grep -v -- '_backup_auto-' | sort -u)"
+# awk, not `grep -v`: grep exits 1 when it selects nothing, and under
+# `set -euo pipefail` that aborts the script right here — so an archive holding
+# ONLY autobackup copies, or no worlds at all, would die silently instead of
+# reaching the "(none)" branch below that exists to explain exactly that case.
+# awk exits 0 on empty output, keeping the diagnostic reachable.
+worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk 'index($0, "_backup_auto-") == 0' | sort -u)"
 
 echo
 echo "=== Worlds in this archive ==="

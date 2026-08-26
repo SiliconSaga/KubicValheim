@@ -264,8 +264,12 @@ sed 's#^\./##' "$listing_raw" > "$listing_norm"
 # that the world you want is named something else. Excludes Valheim's own
 # rotations (.db.old) and odin's timestamped autobackup copies, which are the
 # same world under decorated names and would otherwise pad the list.
+# awk, not `grep -v`: grep exits 1 when it selects nothing, and under
+# `set -euo pipefail` that aborts here — so an archive containing no live worlds
+# would kill the script instead of reaching the "found: no worlds at all" error
+# below, which is precisely the message that case needs. awk exits 0 on empty.
 archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
-  | grep -v -- '_backup_auto-' | sort -u | tr '\n' ' ')"
+  | awk 'index($0, "_backup_auto-") == 0' | sort -u | tr '\n' ' ')"
 echo "Worlds present in archive: ${archive_worlds:-(none)}"
 
 if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm" \
