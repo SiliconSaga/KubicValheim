@@ -4,6 +4,8 @@ The world lives on the `valheim-data` PVC. Restoring means stopping the server, 
 
 > **A restore that silently produces a FRESH world looks identical to success from outside.** Always verify against a specific known object placed in-world before the backup — not merely that the server started.
 
+> **Prefer the Jenkins job.** `scripts/restore-server.sh` (run by the per-instance *Restore server (DESTRUCTIVE)* job) performs every step below plus guards this manual path cannot enforce: it pins an explicit kubectl context, refuses an archive belonging to another instance, checks the live Deployment's `WORLD` matches, and on failure restores the staged world and the previous replica count automatically — **with one deliberate exception: if it cannot verify the world is back in place, it leaves the Deployment at zero replicas** rather than restarting a server with no world for it to load, since Valheim would generate a fresh one and overwrite the evidence. A restore that ends with the server still down is reporting that it could not recover, not that it forgot to. Use this runbook to understand what the script does, or when Jenkins is unavailable — and when following it manually, **pass `--context` on every command**, because `ws k8s` uses the armed guard scope while a bare `kubectl` inherits whatever `current-context` happens to be, which on a workstation is regularly the wrong cluster.
+
 ## 1. Pick the backup
 
     gsutil ls gs://kubic-game-hosting/valheim/<slug>/
@@ -42,9 +44,21 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
     grep -Fqx -- "worlds_local/<WORLD>.db"  /tmp/restore-listing.txt
     grep -Fqx -- "worlds_local/<WORLD>.fwl" /tmp/restore-listing.txt
     ws k8s exec restore-helper -n <ns> -- ls -la /world/worlds_local
-    ws k8s exec restore-helper -n <ns> -- rm -rf /world/worlds_local
+    ws k8s exec restore-helper -n <ns> -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
     ws k8s exec restore-helper -n <ns> -- tar xzf /tmp/restore.tar.gz -C /world
+    ws k8s exec restore-helper -n <ns> -- sh -c "test -s '/world/worlds_local/<WORLD>.db'"
+    ws k8s exec restore-helper -n <ns> -- sh -c "test -s '/world/worlds_local/<WORLD>.fwl'"
+    ws k8s exec restore-helper -n <ns> -- rm -rf /world/worlds_local.rollback
     ws k8s delete pod restore-helper -n <ns>
+
+**Move the old world aside; do not delete it first.** `tar tzf` above proved the archive can be *listed* — it did not prove that extraction can *write* every file to this PVC. A full volume or an I/O error fails partway, and if the old world was already deleted, the only copy is gone. A rename is atomic and free (same filesystem), so the previous world stays intact under `worlds_local.rollback` until the replacement is proven good. The two `test -s` checks are that proof: `tar xzf` exiting 0 is not sufficient evidence that the files Valheim needs are present and non-empty.
+
+**If anything above fails, roll back BEFORE restarting the server.** Put the old world back, and only then scale up:
+
+    ws k8s exec restore-helper -n <ns> -- sh -c 'rm -rf /world/worlds_local; mv /world/worlds_local.rollback /world/worlds_local'
+    ws k8s exec restore-helper -n <ns> -- sh -c "test -s '/world/worlds_local/<WORLD>.db'"   # MUST pass before step 4
+
+If that check does not pass, **leave the deployment at zero replicas**. A stopped server is loud and recoverable; a running server with no world generates a fresh one and overwrites the evidence.
 
 ## 4. Start the server
 

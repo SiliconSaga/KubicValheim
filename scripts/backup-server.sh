@@ -5,9 +5,35 @@
 #   <slug>       instance id; names the GCS path
 #   [namespace]  defaults to valheim-<slug>; valheim7 lives in `kubicvalheim`
 #
+# Env:
+#   KUBE_CONTEXT  kubectl context to target. Optional in Jenkins (one context on
+#                 the agent), but strongly recommended anywhere a workstation is
+#                 involved — see the context note below.
+#
 # odin (AUTO_BACKUP) already produced a consistent archive hourly, so unlike the
 # KubicArk equivalent this does NOT exec a tar over a live world.
 set -euo pipefail
+
+# Which cluster are we talking to? Left implicit, kubectl uses whatever
+# `current-context` happens to be, which on a workstation juggling k3d and GKE is
+# routinely the wrong one — this script silently ran against a local k3d cluster
+# and reported "no pod" for a server that was running fine on GKE. That is the
+# benign half of the failure; restore-server.sh shares this code path and deletes
+# a world, so the same slip there destroys the wrong cluster's save.
+# KUBE_CONTEXT pins it. Unset, we resolve and PRINT the context rather than
+# silently inheriting it, so the target is always visible in the log.
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+if [ -n "$KUBE_CONTEXT" ]; then
+  kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
+else
+  KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+  if [ -z "$KUBE_CONTEXT" ]; then
+    echo "ERROR: no kubectl context set and KUBE_CONTEXT unset" >&2
+    exit 1
+  fi
+  kctl() { kubectl "$@"; }
+fi
+echo "Targeting kubectl context: ${KUBE_CONTEXT}"
 
 slug="${1:?usage: backup-server.sh <slug> [namespace]}"
 
@@ -36,14 +62,14 @@ bucket="gs://kubic-game-hosting/valheim"
 # failure this design exists to avoid.
 max_age_seconds=10800   # 3h
 
-pod="$(kubectl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+pod="$(kctl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 if [ -z "$pod" ]; then
   echo "ERROR: no pod with label app=valheim in namespace ${ns}" >&2
   exit 1
 fi
 echo "Found pod ${pod} in ${ns}"
 
-newest="$(kubectl exec -n "$ns" "$pod" -c valheim-server -- sh -c 'ls -1t /home/steam/backups/*.tar.gz 2>/dev/null | head -1')"
+newest="$(kctl exec -n "$ns" "$pod" -c valheim-server -- sh -c 'ls -1t /home/steam/backups/*.tar.gz 2>/dev/null | head -1')"
 if [ -z "$newest" ]; then
   echo "ERROR: no backup tarballs in /home/steam/backups on ${pod}." >&2
   echo "  Is AUTO_BACKUP=1 set, and is /home/steam/backups actually mounted?" >&2
@@ -51,7 +77,7 @@ if [ -z "$newest" ]; then
 fi
 echo "Newest backup in pod: ${newest}"
 
-mtime="$(kubectl exec -n "$ns" "$pod" -c valheim-server -- stat -c %Y "$newest")"
+mtime="$(kctl exec -n "$ns" "$pod" -c valheim-server -- stat -c %Y "$newest")"
 now="$(date +%s)"
 age=$(( now - mtime ))
 if [ "$age" -gt "$max_age_seconds" ]; then
@@ -67,13 +93,19 @@ local_file="${slug}-${ts}.tar.gz"
 # regardless of outcome — a trap covers both the success and failure paths (and
 # any early exit) without changing exit status or the semantics below.
 trap 'rm -f "$local_file"' EXIT
-kubectl cp -n "$ns" -c valheim-server "${pod}:${newest}" "$local_file"
+kctl cp -n "$ns" -c valheim-server "${pod}:${newest}" "$local_file"
 
 if [ ! -s "$local_file" ]; then
   echo "ERROR: copied file ${local_file} is empty." >&2
   exit 1
 fi
-echo "Copied $(stat -c %s "$local_file") bytes to ${local_file}"
+# `wc -c`, not `stat -c %s`: this line runs on the AGENT, which is Linux under
+# Jenkins but a macOS workstation when run by hand, and BSD stat has no -c (it
+# spells the same thing `-f %z`). The GNU form failed with "illegal option -- c"
+# and printed "Copied  bytes", which looks like a zero-byte copy in a log that is
+# otherwise reporting success. wc -c is POSIX and behaves the same on both.
+# (The `stat -c %Y` above is fine — that one runs INSIDE the Linux container.)
+echo "Copied $(wc -c < "$local_file" | tr -d ' ') bytes to ${local_file}"
 
 # Non-empty does not mean complete. Odin writes directly to the final .tar.gz
 # path — including from its shutdown hook — so a pod terminating mid-backup can
@@ -89,12 +121,20 @@ if ! tar -tzf "$local_file" >/dev/null 2>&1; then
 fi
 echo "Integrity check passed (tar -tzf)"
 
-gsutil cp "$local_file" "${bucket}/${slug}/${ts}/${local_file}"
-echo "Uploaded: ${bucket}/${slug}/${ts}/${local_file}"
+gs_path="${bucket}/${slug}/${ts}/${local_file}"
+gsutil cp "$local_file" "$gs_path"
+echo "Uploaded: ${gs_path}"
+
+# The bucket is public (allUsers: roles/storage.objectViewer) so players can grab
+# their own world archive directly — but a gs:// URI is useless to them; it only
+# means anything to gcloud/gsutil. Derive the HTTPS form from the same $bucket and
+# path pieces used above (never a second hardcoded copy) so the two can't drift.
+https_path="https://storage.googleapis.com/${gs_path#gs://}"
+echo "Shareable link (public bucket): ${https_path}"
 
 # Touch the marker the backup-exporter sidecar reads, ONLY after a confirmed upload.
 # This is what makes `valheim_backup_upload_age_seconds` mean "backups are actually
 # leaving the cluster" rather than merely "odin ran locally". Placed after gsutil so
 # a failed upload leaves the marker stale and the alert fires.
-kubectl exec -n "$ns" "$pod" -c valheim-server -- touch /home/steam/backups/.last-upload
+kctl exec -n "$ns" "$pod" -c valheim-server -- touch /home/steam/backups/.last-upload
 echo "Upload marker refreshed"

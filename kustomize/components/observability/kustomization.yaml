@@ -7,7 +7,16 @@ kind: Component
 #
 # Alerts here are the ones true for EVERY instance. Backup alerting is conditional
 # on the overlay setting AUTO_BACKUP="1" and lives in components/observability-backups.
+#
+# ONE Grafana dashboard: dashboard-tafl-configmap.yaml (uid tafl-valheim). The
+# per-instance predecessor (uid kubicvalheim) was retired once Tafl gained its
+# last two exclusive panels, because two dashboards over one workload is a
+# maintenance trap rather than a choice — the retired one had already drifted,
+# still asserting a node IP destroyed in the 2026-08-24 roll and therefore
+# showing a permanent red against a perfectly reachable server. It also
+# hardcoded namespace="kubicvalheim", so it could never show a second instance,
+# which is the direction this is going.
 resources:
   - servicemonitor.yaml
-  - dashboard-configmap.yaml
+  - dashboard-tafl-configmap.yaml
   - prometheusrule.yaml

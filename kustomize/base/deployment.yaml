@@ -54,6 +54,15 @@ spec:
               cpu: 500m
               memory: 4Gi
             limits:
+              # Deliberately generous — 3x the request. This is an upper bound to
+              # plot live CPU usage against on the Tafl dashboard, not a cap we
+              # expect to reach. A tight CPU limit would be actively harmful here:
+              # CFS throttling stalls the sim tick and players feel it as rubber-
+              # banding, so the number is set well clear of normal load (a handful
+              # of players idles far below one core; world-save spikes are brief).
+              # If ValheimCPUThrottled-style throttling ever shows up on the
+              # dashboard, raise this rather than let the server stutter.
+              cpu: 1500m
               memory: 8Gi
           env:
             - name: NAME

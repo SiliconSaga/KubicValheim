@@ -6,7 +6,14 @@ metadata:
     app: valheim
 spec:
   type: NodePort
-  externalTrafficPolicy: Local
+  # Explicitly Cluster (the k8s default), not left implicit: any node answers on the
+  # NodePort, which is what lets one DNS name front several instances distinguished
+  # only by port. `Local` would restrict connectivity to whichever node currently
+  # runs the pod and breaks the moment it reschedules (a GKE node roll did exactly
+  # this). The source-IP preservation `Local` offers isn't useful here — Valheim's
+  # admin/ban lists are SteamID-based, not IP-based. Trade-off, stated honestly:
+  # client source IPs are SNAT'd, so server logs show a node IP, not the player's.
+  externalTrafficPolicy: Cluster
   selector:
     app: valheim
   ports:

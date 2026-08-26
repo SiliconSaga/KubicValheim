@@ -1,0 +1,217 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valheim-dashboard-tafl
+  labels:
+    # The kube-prometheus-stack Grafana sidecar auto-imports ConfigMaps with this label.
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: kubicvalheim
+# The `namespace` variable is populated from kube-state-metrics
+# (kube_deployment_status_replicas_available{deployment="valheim"}) rather than from
+# one of our own metrics. A fleet dashboard has to list EVERY instance, including
+# ones that are broken or not yet instrumented — and that is exactly when someone
+# opens it. Keying it off valheim_backup_age_seconds, as this first did, silently
+# hid any instance without the backup-exporter sidecar (an overlay with
+# AUTO_BACKUP="0", or one not yet migrated), so the instance most worth looking at
+# was the one you could not select. kube-state-metrics reports the Deployment
+# whatever state it is in, and needs nothing from us.
+#
+# Both the CPU and Memory panels plot usage against request AND limit. That only
+# works because base/deployment.yaml declares both limits (cpu 1500m, memory
+# 8Gi) — a series querying kube_pod_container_resource_limits for a resource
+# with no limit set returns nothing and renders as a permanently flat line,
+# which reads as broken scraping rather than as "no limit". If a limit is ever
+# removed from the Deployment, drop its series here in the same change.
+data:
+  tafl-valheim.json: |
+    {
+      "title": "Tafl — Valheim Fleet",
+      "uid": "tafl-valheim",
+      "schemaVersion": 39,
+      "editable": true,
+      "time": { "from": "now-6h", "to": "now" },
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "type": "query",
+            "label": "Namespace",
+            "query": "label_values(kube_deployment_status_replicas_available{deployment=\"valheim\"}, namespace)",
+            "refresh": 2,
+            "sort": 1,
+            "includeAll": false,
+            "multi": false
+          },
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "label": "Loki datasource",
+            "query": "loki",
+            "refresh": 1,
+            "current": {}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Server Up",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ] } },
+          "description": "Scoped to endpoint=\"huginn\" on purpose. The ServiceMonitor produces `up` series for BOTH the game endpoint and the backup-exporter sidecar, so an unscoped max() reports UP whenever the sidecar is alive — the backup exporter would mask a dead game, which is the one thing this panel exists to show. `or vector(0)` covers the pod vanishing entirely, where the series stops existing rather than reporting 0. prometheusrule.yaml's ValheimDown scopes the same way for the same reason.",
+          "targets": [
+            { "expr": "max(up{service=\"valheim-metrics\", endpoint=\"huginn\", namespace=\"$namespace\"}) or vector(0)", "refId": "A" }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Backup age (hours)",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "description": "The backup-exporter reports -1 as its sentinel for 'no local backup exists yet' — the thresholds below key green off 0 specifically so that sentinel reads as unhealthy (base/red) rather than accidentally healthy.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
+                  { "color": "orange", "value": 2 },
+                  { "color": "red", "value": 4 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_age_seconds{namespace=\"$namespace\"}) / 3600", "refId": "A" }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Last GCS upload (hours)",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+          "description": "Same -1 'none exist' sentinel as backup age — thresholds key green off 0 for the same reason, not because -1 is a plausible age.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
+                  { "color": "orange", "value": 30 },
+                  { "color": "red", "value": 36 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_upload_age_seconds{namespace=\"$namespace\"}) / 3600", "refId": "A" }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Published IP drift",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+          "description": "Reads the ValheimPublishedIPDrift ALERT rather than re-testing the published address. The retired per-instance dashboard hardcoded the IP, which made it a third copy of a fact that lives in the overlay's rule and in Namecheap — and after the 2026-08-24 node roll it showed a permanent red while the server was perfectly reachable. Driving the panel from the alert means the panel and the page can never disagree. 0 is healthy; 1 means the address no longer belongs to any node.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "count(ALERTS{alertname=~\"Valheim.*PublishedIPDrift\", alertstate=\"firing\", namespace=\"$namespace\"}) or vector(0)", "refId": "A" }
+          ]
+        },
+        {
+          "id": 9,
+          "title": "Usable node IPs",
+          "type": "table",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 32 },
+          "description": "Every node ExternalIP in the cluster — the answer to 'what do I repoint DNS at?' when drift fires. Under externalTrafficPolicy: Cluster ANY of these serves the NodePort, so every row is a valid choice; pick one and update BOTH the A record and the overlay's rule. Deliberately not filtered by $namespace: node addresses are cluster-wide and do not belong to an instance.",
+          "targets": [
+            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"}", "refId": "A", "instant": true, "format": "table" }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Players Online",
+          "type": "timeseries",
+          "description": "History, not just a current count — shows joins/leaves over time rather than a single point-in-time number.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+          "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true } } },
+          "targets": [
+            { "expr": "max(valheim_current_player_count{namespace=\"$namespace\"})", "refId": "A", "legendFormat": "players" }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "CPU (cores)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "targets": [
+            { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" },
+            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "C", "legendFormat": "limit" }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Memory (working set)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+          "fieldConfig": { "defaults": { "unit": "bytes" } },
+          "targets": [
+            { "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" },
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"memory\"})", "refId": "B", "legendFormat": "request" },
+            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"memory\"})", "refId": "C", "legendFormat": "limit" }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Player connects / disconnects",
+          "type": "logs",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player.",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "showCommonLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": false,
+            "enableLogDetails": true,
+            "dedupStrategy": "none",
+            "sortOrder": "Descending"
+          },
+          "targets": [
+            {
+              "expr": "{k8s_namespace_name=\"$namespace\"} |= \"Got character ZDOID\"",
+              "refId": "A",
+              "legendFormat": "join",
+              "datasource": { "type": "loki", "uid": "${datasource}" }
+            },
+            {
+              "expr": "{k8s_namespace_name=\"$namespace\"} |= \"Closing socket\"",
+              "refId": "B",
+              "legendFormat": "leave",
+              "datasource": { "type": "loki", "uid": "${datasource}" }
+            }
+          ]
+        }
+      ]
+    }
