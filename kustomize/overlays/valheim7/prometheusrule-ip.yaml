@@ -33,9 +33,20 @@ spec:
         # @ and *, and that API REPLACES the domain's entire record set — running it
         # against terasology.org would delete every other record on the domain. A
         # single-record updater is needed instead.
+        # The `and on()` guard is load-bearing, not decoration. A bare absent()
+        # is also true when kube-state-metrics itself is down, because then EVERY
+        # node-address series disappears — so a telemetry outage would raise a
+        # critical, DND-tier page claiming the published IP had drifted, and the
+        # runbook it points at says "repoint DNS", which would be actively wrong.
+        # Requiring at least one ExternalIP series to exist means the rule can
+        # only fire when the exporter is reporting AND this specific address is
+        # missing from what it reports. If kube-state-metrics dies, this alert
+        # goes silent — correctly; that failure is kube-prometheus-stack's own
+        # KubeStateMetricsDown to report, not ours to guess at.
         - alert: ValheimPublishedIPDrift
           expr: >-
             absent(kube_node_status_addresses{type="ExternalIP", address="34.75.63.41"})
+            and on() (count(kube_node_status_addresses{type="ExternalIP"}) > 0)
           for: 5m
           labels:
             severity: critical

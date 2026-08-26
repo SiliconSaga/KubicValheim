@@ -62,8 +62,9 @@ data:
           "fieldConfig": { "defaults": { "mappings": [
             { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
           ] } },
+          "description": "Scoped to endpoint=\"huginn\" on purpose. The ServiceMonitor produces `up` series for BOTH the game endpoint and the backup-exporter sidecar, so an unscoped max() reports UP whenever the sidecar is alive — the backup exporter would mask a dead game, which is the one thing this panel exists to show. `or vector(0)` covers the pod vanishing entirely, where the series stops existing rather than reporting 0. prometheusrule.yaml's ValheimDown scopes the same way for the same reason.",
           "targets": [
-            { "expr": "max(up{service=\"valheim-metrics\", namespace=\"$namespace\"})", "refId": "A" }
+            { "expr": "max(up{service=\"valheim-metrics\", endpoint=\"huginn\", namespace=\"$namespace\"}) or vector(0)", "refId": "A" }
           ]
         },
         {

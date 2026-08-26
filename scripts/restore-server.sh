@@ -11,9 +11,13 @@
 #               backup-server.sh prints, since the owner hands players that link
 #
 # Env:
-#   KUBE_CONTEXT  kubectl context to target. REQUIRED when a workstation is
-#                 involved — see the context guard below for why this one is not
-#                 merely advisory like it is in backup-server.sh.
+#   KUBE_CONTEXT  kubectl context to target. REQUIRED — this script refuses to
+#                 run without it, unlike backup-server.sh where it is advisory.
+#                 See the context guard below for why inheriting current-context
+#                 is not safe here.
+#   RESTORE_ALLOW_CURRENT_CONTEXT=1
+#                 Deliberate opt-in to use kubectl's current-context instead.
+#                 Set by restore.Jenkinsfile, where the agent has exactly one.
 #
 # DESTRUCTIVE: scales deployment/valheim to 0 and replaces worlds_local on the
 # live PVC. Mirrors docs/restore.md — read that first if this needs changing.
@@ -35,9 +39,22 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 if [ -n "$KUBE_CONTEXT" ]; then
   kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 else
+  # Fail closed rather than inheriting `current-context`. Step 4b's WORLD check
+  # is NOT a cluster-identity check — applying the same overlay to a local test
+  # cluster produces the same namespace and the same WORLD, so a stale context
+  # can satisfy it and still reach the destructive steps. The Jenkins agent has
+  # exactly one context and opts in explicitly below; a workstation must say
+  # which cluster it means.
+  if [ "${RESTORE_ALLOW_CURRENT_CONTEXT:-0}" != "1" ]; then
+    echo "ERROR: KUBE_CONTEXT is not set." >&2
+    echo "  This job deletes a world. Name the cluster explicitly:" >&2
+    echo "    KUBE_CONTEXT=<context> $0 $*" >&2
+    echo "  To deliberately use kubectl's current-context ($(kubectl config current-context 2>/dev/null || echo none)), set RESTORE_ALLOW_CURRENT_CONTEXT=1." >&2
+    exit 1
+  fi
   KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
   if [ -z "$KUBE_CONTEXT" ]; then
-    echo "ERROR: no kubectl context set and KUBE_CONTEXT unset" >&2
+    echo "ERROR: RESTORE_ALLOW_CURRENT_CONTEXT=1 but kubectl has no current-context" >&2
     exit 1
   fi
   kctl() { kubectl "$@"; }
@@ -102,7 +119,38 @@ echo "Archive: ${gs_uri}"
 local_file=""
 listing_raw=""
 listing_norm=""
-trap 'rm -f "$local_file" "$listing_raw" "$listing_norm"' EXIT
+# Set once destructive work begins, so cleanup knows whether there is anything
+# in the cluster to undo. Before this flips, a failure only needs temp files
+# removed; after it, a failure has left a stopped server and a staged world.
+destructive_started=0
+helper="restore-helper"
+prev_replicas=""
+
+cleanup() {
+  status=$?
+  rm -f "$local_file" "$listing_raw" "$listing_norm"
+  if [ "$destructive_started" -eq 0 ] || [ "$status" -eq 0 ]; then
+    return 0
+  fi
+  # Everything below is best-effort and must not mask the original failure:
+  # a rollback that itself fails should still report the real exit status.
+  echo "" >&2
+  echo "RESTORE FAILED (exit ${status}) — rolling back." >&2
+  # Put the previous world back if it was staged aside but never replaced.
+  kctl exec "$helper" -n "$ns" -- sh -c \
+    'if [ -d /world/worlds_local.rollback ]; then rm -rf /world/worlds_local; mv /world/worlds_local.rollback /world/worlds_local; fi' \
+    >/dev/null 2>&1 || true
+  kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  # Bring the server back up. Leaving it at zero replicas turns a failed
+  # restore into an outage, which is a strictly worse outcome than the state
+  # we started from.
+  if [ -n "$prev_replicas" ]; then
+    kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
+    echo "Rolled back: previous world restored, helper removed, replicas back to ${prev_replicas}." >&2
+  fi
+  echo "Re-run once the cause is understood; the world on the PVC is the one you started with." >&2
+}
+trap cleanup EXIT
 
 # --- 2. Download the archive to the workspace -------------------------------
 local_file="$(basename "$gs_uri")"
@@ -182,13 +230,15 @@ echo "Live instance confirmed: ${ns} on ${KUBE_CONTEXT} is running world '${live
 # Releases the RWO volumes so the helper pod below can mount them. Everything
 # above this line is read-only against the cluster — this is the first step
 # that touches the live instance, and only validated input reaches it.
-echo "Scaling deployment/valheim to 0 in ${ns}..."
+prev_replicas="$(kctl get deployment valheim -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+[ -n "$prev_replicas" ] || prev_replicas=1
+echo "Scaling deployment/valheim to 0 in ${ns} (was ${prev_replicas})..."
+destructive_started=1
 kctl scale deployment valheim -n "$ns" --replicas=0
 kctl wait pod -l app=valheim -n "$ns" --for=delete --timeout=180s
 echo "Pod gone — volumes released"
 
-# --- 6. Helper pod: last look, remove worlds_local, extract, delete --------
-helper="restore-helper"
+# --- 6. Helper pod: stage the old world aside, extract, verify, swap -------
 # Pod deletion isn't the same as the volume actually detaching, so a leftover
 # helper from a prior failed attempt is removed first rather than assumed gone.
 kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=true
@@ -201,18 +251,40 @@ kctl wait pod "$helper" -n "$ns" --for=condition=Ready --timeout=120s
 
 kctl cp "$local_file" "${ns}/${helper}:/tmp/restore.tar.gz"
 
-echo "Existing world on the PVC, last look before removal:"
+echo "Existing world on the PVC, last look before it is staged aside:"
 kctl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
 
-kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local
+# The old world is MOVED, not deleted. `tar tzf` in step 3 proved the archive
+# can be LISTED; it does not prove extraction can write every file to this PVC
+# — a full volume or an I/O error fails mid-extract. Deleting first and
+# extracting second means such a failure destroys the only copy, and `set -e`
+# then exits with the world already gone. A rename is atomic, cheap (same
+# filesystem), and leaves a complete copy to fall back to.
+kctl exec "$helper" -n "$ns" -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
+echo "Previous world staged at /world/worlds_local.rollback"
+
 kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
+
+# Extraction reporting success is still not proof the world is usable: verify
+# the two files Valheim actually needs are present and non-empty. Without this
+# a truncated-but-exit-0 extract would be swapped in and the rollback deleted.
+kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'"
+kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.fwl'"
+echo "Extracted world verified: ${world}.db and ${world}.fwl both present and non-empty"
+
+# Only now is the old copy expendable.
+kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local.rollback
+echo "Rollback copy removed — restore committed"
 
 kctl delete pod "$helper" -n "$ns"
 echo "Helper pod cleaned up"
 
-# --- 7. Scale back to 1 ------------------------------------------------------
-kctl scale deployment valheim -n "$ns" --replicas=1
-echo "Scaled deployment/valheim back to 1 in ${ns}"
+# --- 7. Scale back to the replica count we found -----------------------------
+kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas"
+echo "Scaled deployment/valheim back to ${prev_replicas} in ${ns}"
+# Past this point there is nothing left to roll back, and the trap must not
+# undo a completed restore.
+destructive_started=0
 
 # --- 8. How to verify — the step that actually matters -----------------------
 # A restore that silently produces a FRESH world looks identical to success

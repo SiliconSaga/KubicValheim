@@ -47,13 +47,13 @@ instances.each { inst ->
     pipelineJob("${parentGameFolder}/${inst.slug}/restore") {
         displayName("Restore server (DESTRUCTIVE)")
 
-        // DUPLICATED here and in restore.Jenkinsfile's own `parameters` block —
-        // deliberately, not an oversight. Jenkins only registers a Jenkinsfile's
-        // `parameters` block AFTER the first build runs once; before that, a
-        // pipelineJob has no parameters at all unless the DSL declares them here
-        // too. Without this, run #1 of a brand-new restore job would offer no
-        // `slug`/`namespace`/`world`/`archive` fields to fill in. Do not "tidy"
-        // this away — keep both in sync if a parameter changes.
+        // THE single source of truth for this job's parameters. restore.Jenkinsfile
+        // deliberately has no `parameters` block: a Declarative Pipeline's
+        // parameters block REPLACES the job's parameter definitions on every run,
+        // so a shared, instance-agnostic Jenkinsfile would overwrite the
+        // per-instance defaults below — in particular blanking `world`, which
+        // restore-server.sh then rejects. Only the DSL knows each instance's
+        // world, so only the DSL declares parameters. Add new ones here.
         parameters {
             stringParam('slug', inst.slug, 'Instance slug — same DNS-1123 validation as the backup job')
             stringParam('namespace', inst.namespace, 'Namespace holding the server')
