@@ -6,6 +6,13 @@ metadata:
     # The kube-prometheus-stack Grafana sidecar auto-imports ConfigMaps with this label.
     grafana_dashboard: "1"
     app.kubernetes.io/part-of: kubicvalheim
+# Note on the CPU panel: it plots usage and request only, deliberately with no
+# "limit" series. base/deployment.yaml gives valheim-server a memory limit (8Gi)
+# but NO cpu limit — a CPU limit would throttle the sim tick and stutter the
+# server for players. A limit series here would query
+# kube_pod_container_resource_limits{resource="cpu"}, which returns nothing, so
+# the panel would carry a permanently empty line that reads as broken scraping.
+# The memory panel keeps its limit series because that limit genuinely exists.
 data:
   tafl-valheim.json: |
     {
@@ -115,8 +122,7 @@ data:
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
           "targets": [
             { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
-            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" },
-            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "C", "legendFormat": "limit" }
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" }
           ]
         },
         {
