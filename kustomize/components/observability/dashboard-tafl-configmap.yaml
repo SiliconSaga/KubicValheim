@@ -30,6 +30,7 @@ data:
       "schemaVersion": 39,
       "editable": true,
       "time": { "from": "now-6h", "to": "now" },
+      "refresh": "30s",
       "templating": {
         "list": [
           {
