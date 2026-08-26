@@ -10,6 +10,11 @@
 #   <archive>   gs://... path OR the https://storage.googleapis.com/... URL
 #               backup-server.sh prints, since the owner hands players that link
 #
+# Env:
+#   KUBE_CONTEXT  kubectl context to target. REQUIRED when a workstation is
+#                 involved — see the context guard below for why this one is not
+#                 merely advisory like it is in backup-server.sh.
+#
 # DESTRUCTIVE: scales deployment/valheim to 0 and replaces worlds_local on the
 # live PVC. Mirrors docs/restore.md — read that first if this needs changing.
 # EVERY validation below (slug, world name, archive integrity, archive-vs-world
@@ -17,6 +22,27 @@
 # slug, an unreadable archive, or an archive from the wrong instance all abort
 # with the live world completely intact.
 set -euo pipefail
+
+# Which cluster are we destroying a world on? kubectl defaults to whatever
+# `current-context` happens to be. On a workstation that juggles k3d and GKE that
+# is regularly NOT the cluster you mean — backup-server.sh silently queried a
+# local k3d cluster and reported "no pod" for a server running fine on GKE. Here
+# the same slip would scale down a deployment and `rm -rf` a worlds_local on the
+# wrong cluster. KUBE_CONTEXT pins the target; unset, we resolve and print it so
+# it is never silently inherited. Step 4b below turns this from "printed, hope
+# someone reads it" into an actual guard.
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+if [ -n "$KUBE_CONTEXT" ]; then
+  kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
+else
+  KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+  if [ -z "$KUBE_CONTEXT" ]; then
+    echo "ERROR: no kubectl context set and KUBE_CONTEXT unset" >&2
+    exit 1
+  fi
+  kctl() { kubectl "$@"; }
+fi
+echo "Targeting kubectl context: ${KUBE_CONTEXT}"
 
 slug="${1:?usage: restore-server.sh <slug> <namespace> <world> <archive>}"
 ns="${2:?usage: restore-server.sh <slug> <namespace> <world> <archive>}"
@@ -85,7 +111,11 @@ if [ ! -s "$local_file" ]; then
   echo "ERROR: downloaded file ${local_file} is empty." >&2
   exit 1
 fi
-echo "Downloaded $(stat -c %s "$local_file") bytes to ${local_file}"
+# `wc -c`, not `stat -c %s` — this runs on the AGENT, and BSD stat (macOS) has no
+# -c, so the GNU form prints "illegal option" and yields an empty size, which
+# reads as a zero-byte download in an otherwise-successful log. See the matching
+# note in backup-server.sh.
+echo "Downloaded $(wc -c < "$local_file" | tr -d ' ') bytes to ${local_file}"
 
 # --- 3. Validate it before touching anything --------------------------------
 # `tar tzf` on its OWN line — never piped into anything else. A pipeline
@@ -125,40 +155,63 @@ if ! grep -Fqx -- "worlds_local/${world}.fwl" "$listing_norm"; then
 fi
 echo "World match confirmed: worlds_local/${world}.db and .fwl both present in archive"
 
+# --- 4b. Confirm the LIVE instance is the one we think it is ---------------
+# Everything above validated the ARCHIVE. Nothing yet has checked that the
+# cluster/namespace we are pointed at actually holds this instance — and the
+# context we resolved above may simply be wrong. Reading WORLD off the live
+# Deployment closes that gap: on the wrong cluster the Deployment is absent, and
+# on the wrong namespace (or a namespace that was recycled for a different
+# instance) WORLD won't match. Both abort here, while the live world is still
+# untouched. Without this, a stale kubectl context plus a valid archive is
+# sufficient to destroy an unrelated server's save.
+live_world="$(kctl get deployment valheim -n "$ns" \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="valheim-server")].env[?(@.name=="WORLD")].value}' 2>/dev/null || true)"
+if [ -z "$live_world" ]; then
+  echo "ERROR: no deployment/valheim with a WORLD env in namespace '${ns}' on context '${KUBE_CONTEXT}'." >&2
+  echo "  Wrong cluster or wrong namespace — refusing to restore. Nothing was touched." >&2
+  exit 1
+fi
+if [ "$live_world" != "$world" ]; then
+  echo "ERROR: live instance in '${ns}' is running world '${live_world}', but this restore targets '${world}'." >&2
+  echo "  Refusing to overwrite a different server's world. Nothing was touched." >&2
+  exit 1
+fi
+echo "Live instance confirmed: ${ns} on ${KUBE_CONTEXT} is running world '${live_world}'"
+
 # --- 5. Scale the deployment to 0 and wait for the pod to be gone ----------
 # Releases the RWO volumes so the helper pod below can mount them. Everything
 # above this line is read-only against the cluster — this is the first step
 # that touches the live instance, and only validated input reaches it.
 echo "Scaling deployment/valheim to 0 in ${ns}..."
-kubectl scale deployment valheim -n "$ns" --replicas=0
-kubectl wait pod -l app=valheim -n "$ns" --for=delete --timeout=180s
+kctl scale deployment valheim -n "$ns" --replicas=0
+kctl wait pod -l app=valheim -n "$ns" --for=delete --timeout=180s
 echo "Pod gone — volumes released"
 
 # --- 6. Helper pod: last look, remove worlds_local, extract, delete --------
 helper="restore-helper"
 # Pod deletion isn't the same as the volume actually detaching, so a leftover
 # helper from a prior failed attempt is removed first rather than assumed gone.
-kubectl delete pod "$helper" -n "$ns" --ignore-not-found --wait=true
+kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=true
 
-kubectl run "$helper" -n "$ns" --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
+kctl run "$helper" -n "$ns" --image=busybox:1.36 --restart=Never --overrides='{"spec":{"containers":[{"name":"restore-helper","image":"busybox:1.36","command":["sleep","3600"],"volumeMounts":[{"name":"world","mountPath":"/world"}]}],"volumes":[{"name":"world","persistentVolumeClaim":{"claimName":"valheim-data"}}]}}'
 # If this Ready wait times out, the previous attachment is probably still
 # releasing (see docs/restore.md) — rerun the job rather than assuming the
 # restore itself has failed; nothing destructive has happened yet.
-kubectl wait pod "$helper" -n "$ns" --for=condition=Ready --timeout=120s
+kctl wait pod "$helper" -n "$ns" --for=condition=Ready --timeout=120s
 
-kubectl cp "$local_file" "${ns}/${helper}:/tmp/restore.tar.gz"
+kctl cp "$local_file" "${ns}/${helper}:/tmp/restore.tar.gz"
 
 echo "Existing world on the PVC, last look before removal:"
-kubectl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
+kctl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
 
-kubectl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local
-kubectl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
+kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local
+kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
 
-kubectl delete pod "$helper" -n "$ns"
+kctl delete pod "$helper" -n "$ns"
 echo "Helper pod cleaned up"
 
 # --- 7. Scale back to 1 ------------------------------------------------------
-kubectl scale deployment valheim -n "$ns" --replicas=1
+kctl scale deployment valheim -n "$ns" --replicas=1
 echo "Scaled deployment/valheim back to 1 in ${ns}"
 
 # --- 8. How to verify — the step that actually matters -----------------------
@@ -168,7 +221,7 @@ cat <<EOF
 
 Restore submitted. Verify it actually took:
 
-  kubectl logs deployment/valheim -n ${ns} --tail=50
+  kubectl --context ${KUBE_CONTEXT} logs deployment/valheim -n ${ns} --tail=50
 
 The log should show:  Load world: ${world}
 with NO following:    ... missing .../${world}.db ...
