@@ -56,6 +56,15 @@ scripts/start-server.sh      # data-driven per-instance overlay renderer
 - **Image:** `mbround18/valheim:3.6.0` (pinned, never `:latest`), with the Huginn HTTP server (`HTTP_PORT`/`PUBLIC`/`ADDRESS`) serving `/metrics` + `/status`.
 - **Player lists:** the `valheim-player-lists` ConfigMap (admin / banned / permitted) is copied into the world config dir by an init container.
 - **Backup:** odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups` (its own `valheim-backups` PVC — deliberately not a `subPath` of the world PVC, or each tarball would contain every previous one); a nightly Jenkins job ships the newest to `gs://kubic-game-hosting/valheim/<slug>/<ts>/`. Restore procedure: [`docs/restore.md`](docs/restore.md). The `components/backup` seam remains inert and is reserved for the Phase-3 S3-endpoint-agnostic CronJob.
+- **Reviving an old world on a new server.** Any archive can be restored onto any instance — the bucket is public, so a link to a world's zip is enough, and cross-instance restore is a supported workflow rather than an accident. The one thing that must line up is the **world name**: Valheim loads whatever the Deployment's `WORLD` env says, so a server configured for a different name will ignore the restored files and generate an empty world beside them. Create the instance with the world's original name (`WORLD` in the overlay's `instance-patch.yaml`), then run the restore job.
+
+  If you no longer remember the name, the archive knows it — worlds are stored as `worlds_local/<World>.db`:
+
+  ```bash
+  scripts/inspect-archive.sh https://storage.googleapis.com/kubic-game-hosting/valheim/<slug>/<ts>/<slug>-<ts>.tar.gz
+  ```
+
+  It accepts a `gs://` path, a public HTTPS link, or a local file, prints the world names it contains, and touches nothing. Renaming an existing server's world is a *different* operation: change `WORLD`, apply, let the pod restart, and only then restore — a restore alone cannot do it.
 - **Architecture:** the Valheim dedicated server is x86_64-only (no ARM build), and its bundled 32-bit SteamCMD segfaults under emulation — so run it on an **amd64** host/cluster (GKE, an amd64 homelab, or a Windows/Linux amd64 box). The manifests are architecture-independent; the game binary is not.
 
 ## License

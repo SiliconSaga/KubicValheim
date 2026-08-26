@@ -257,12 +257,29 @@ echo "Integrity check passed (tar tzf)"
 # substring of "WorldX1.db" from a different server's archive — and step 6
 # would then delete the live world under a false positive.
 sed 's#^\./##' "$listing_raw" > "$listing_norm"
-if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm"; then
-  echo "ERROR: archive does not contain worlds_local/${world}.db — this is the WRONG archive for world '${world}'. NOT touching the live world." >&2
-  exit 1
-fi
-if ! grep -Fqx -- "worlds_local/${world}.fwl" "$listing_norm"; then
-  echo "ERROR: archive does not contain worlds_local/${world}.fwl — this is the WRONG archive for world '${world}'. NOT touching the live world." >&2
+
+# What worlds does this archive actually hold? Reported unconditionally, because
+# "does not contain X" is a far less useful error than "does not contain X, it
+# contains Y" — the second tells you either that you grabbed the wrong file or
+# that the world you want is named something else. Excludes Valheim's own
+# rotations (.db.old) and odin's timestamped autobackup copies, which are the
+# same world under decorated names and would otherwise pad the list.
+archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
+  | grep -v -- '_backup_auto-' | sort -u | tr '\n' ' ')"
+echo "Worlds present in archive: ${archive_worlds:-(none)}"
+
+if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm" \
+   || ! grep -Fqx -- "worlds_local/${world}.fwl" "$listing_norm"; then
+  echo "ERROR: this archive does not contain world '${world}'." >&2
+  echo "  wanted: worlds_local/${world}.db and worlds_local/${world}.fwl" >&2
+  echo "  found:  ${archive_worlds:-no worlds at all}" >&2
+  echo "  NOT touching the live world." >&2
+  echo "" >&2
+  echo "  If the archive holds the world you want under a different name, that is a" >&2
+  echo "  RENAME, not a restore — Valheim loads whatever the Deployment's WORLD env" >&2
+  echo "  says, so extracting a differently-named world here would leave those files" >&2
+  echo "  unused and generate a fresh '${world}' instead. Set WORLD to the name above" >&2
+  echo "  in the instance's overlay, apply it, let the pod restart, then re-run this." >&2
   exit 1
 fi
 echo "World match confirmed: worlds_local/${world}.db and .fwl both present in archive"
@@ -285,7 +302,20 @@ if [ -z "$live_world" ]; then
 fi
 if [ "$live_world" != "$world" ]; then
   echo "ERROR: live instance in '${ns}' is running world '${live_world}', but this restore targets '${world}'." >&2
-  echo "  Refusing to overwrite a different server's world. Nothing was touched." >&2
+  echo "  Nothing was touched." >&2
+  echo "" >&2
+  echo "  Two different intentions end up here, and they have different fixes:" >&2
+  echo "" >&2
+  echo "  1. You aimed at the wrong server. '${ns}' hosts '${live_world}'. Re-run with" >&2
+  echo "     the namespace of the instance that actually runs '${world}'." >&2
+  echo "" >&2
+  echo "  2. You want THIS server to become '${world}'. A restore cannot do that on" >&2
+  echo "     its own: Valheim loads whatever the Deployment's WORLD env says, so the" >&2
+  echo "     extracted files would sit unused while it regenerated '${live_world}'." >&2
+  echo "     Set WORLD='${world}' in the instance's overlay (instance-patch.yaml)," >&2
+  echo "     apply it, let the pod restart, and then re-run this restore. Note the" >&2
+  echo "     old world's files stay on the PVC beside the new ones — see docs/restore.md" >&2
+  echo "     on why two worlds in one directory is worth cleaning up." >&2
   exit 1
 fi
 echo "Live instance confirmed: ${ns} on ${KUBE_CONTEXT} is running world '${live_world}'"
