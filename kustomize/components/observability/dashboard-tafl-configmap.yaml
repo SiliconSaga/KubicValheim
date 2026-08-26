@@ -1,0 +1,167 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valheim-dashboard-tafl
+  labels:
+    # The kube-prometheus-stack Grafana sidecar auto-imports ConfigMaps with this label.
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: kubicvalheim
+data:
+  tafl-valheim.json: |
+    {
+      "title": "Tafl — Valheim Fleet",
+      "uid": "tafl-valheim",
+      "schemaVersion": 39,
+      "editable": true,
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "type": "query",
+            "label": "Namespace",
+            "query": "label_values(valheim_backup_age_seconds, namespace)",
+            "refresh": 2,
+            "sort": 1,
+            "includeAll": false,
+            "multi": false
+          },
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "label": "Loki datasource",
+            "query": "loki",
+            "refresh": 1,
+            "current": {}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Server Up",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ] } },
+          "targets": [
+            { "expr": "max(up{service=\"valheim-metrics\", namespace=\"$namespace\"})", "refId": "A" }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Backup age (hours)",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "description": "The backup-exporter reports -1 as its sentinel for 'no local backup exists yet' — the thresholds below key green off 0 specifically so that sentinel reads as unhealthy (base/red) rather than accidentally healthy.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
+                  { "color": "orange", "value": 2 },
+                  { "color": "red", "value": 4 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_age_seconds{namespace=\"$namespace\"}) / 3600", "refId": "A" }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Last GCS upload (hours)",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+          "description": "Same -1 'none exist' sentinel as backup age — thresholds key green off 0 for the same reason, not because -1 is a plausible age.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 },
+                  { "color": "orange", "value": 30 },
+                  { "color": "red", "value": 36 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "max(valheim_backup_upload_age_seconds{namespace=\"$namespace\"}) / 3600", "refId": "A" }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Players Online",
+          "type": "timeseries",
+          "description": "History, not just a current count — shows joins/leaves over time rather than a single point-in-time number.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+          "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true } } },
+          "targets": [
+            { "expr": "max(valheim_current_player_count{namespace=\"$namespace\"})", "refId": "A", "legendFormat": "players" }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "CPU (cores)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "targets": [
+            { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" },
+            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "C", "legendFormat": "limit" }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Memory (working set)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "fieldConfig": { "defaults": { "unit": "bytes" } },
+          "targets": [
+            { "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" },
+            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"memory\"})", "refId": "B", "legendFormat": "request" },
+            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"memory\"})", "refId": "C", "legendFormat": "limit" }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Player connects / disconnects",
+          "type": "logs",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player.",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 22 },
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "showCommonLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": false,
+            "enableLogDetails": true,
+            "dedupStrategy": "none",
+            "sortOrder": "Descending"
+          },
+          "targets": [
+            {
+              "expr": "{k8s_namespace_name=\"$namespace\"} |= \"Got character ZDOID\"",
+              "refId": "A",
+              "legendFormat": "join",
+              "datasource": { "type": "loki", "uid": "${datasource}" }
+            },
+            {
+              "expr": "{k8s_namespace_name=\"$namespace\"} |= \"Closing socket\"",
+              "refId": "B",
+              "legendFormat": "leave",
+              "datasource": { "type": "loki", "uid": "${datasource}" }
+            }
+          ]
+        }
+      ]
+    }
