@@ -122,16 +122,16 @@ data:
             }
           },
           "targets": [
-            { "expr": "count(kube_node_status_addresses{type=\"ExternalIP\", address=\"34.26.181.102\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})) or vector(0)", "refId": "A" }
+            { "expr": "count(kube_node_status_addresses{type=\"ExternalIP\", address=\"34.26.181.102\"}) or vector(0)", "refId": "A" }
           ]
         },
         {
           "type": "stat",
-          "title": "Correct IP right now",
+          "title": "Usable node IPs",
           "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
           "options": { "textMode": "name" },
           "targets": [
-            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"} * on(node) group_left() max by(node) (kube_pod_info{namespace=\"kubicvalheim\", pod=~\"valheim-.*\"})", "refId": "A", "legendFormat": "{{address}}" }
+            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"}", "refId": "A", "legendFormat": "{{address}}" }
           ]
         }
       ]
