@@ -104,8 +104,39 @@ resources:
   - ../../base
   - secret.yaml
 
+# Observability and backups are ON for a generated instance, matching what every
+# hand-written overlay ended up needing. This script previously emitted neither,
+# so each new instance silently started life with no metrics, no alerts, and
+# AUTO_BACKUP="0" — and the omission only surfaced later, as a server that had
+# been running unwatched and unbacked-up the whole time. Defaulting to the
+# cautious shape is wrong here: an unbackedup game server is not the safe option.
+components:
+  - ../../components/observability
+  # Valid ONLY because AUTO_BACKUP="1" is patched below — on an overlay without
+  # backups these alerts fire permanently. See the component README.
+  - ../../components/observability-backups
+
 patches:
   - path: instance-patch.yaml
+  # Turn on odin's scheduled backups (base ships them off). AUTO_BACKUP_ON_SHUTDOWN
+  # rides along in the same patch because the shutdown handler evaluates it
+  # independently of AUTO_BACKUP — turning one on without the other loses the
+  # save that matters most, the one taken as the server stops.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: valheim
+      spec:
+        template:
+          spec:
+            containers:
+              - name: valheim-server
+                env:
+                  - name: AUTO_BACKUP
+                    value: "1"
+                  - name: AUTO_BACKUP_ON_SHUTDOWN
+                    value: "1"
   # JSON6902 by index, GUARDED with test ops asserting the port names, so a reorder
   # of base/service.yaml's port list fails the build loudly instead of silently
   # patching the wrong port. (Strategic-merge on Service ports doesn't reliably

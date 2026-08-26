@@ -87,8 +87,19 @@ sed 's#^\./##' "$listing" > "$norm"
 # `set -euo pipefail` that aborts the script right here — so an archive holding
 # ONLY backup copies, or no worlds at all, would die silently instead of
 # reaching the "(none)" branch that exists to explain exactly that case.
-worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk 'index($0, "_backup_") == 0' | sort -u)"
-backup_copies="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk 'index($0, "_backup_") > 0' | sort -u)"
+# Match the TIMESTAMP, not the word "backup". A plain `_backup_` substring test
+# also swallows a world someone legitimately called `World_backup_legacy` —
+# start-server.sh's allowlist permits underscores, so that name is reachable, and
+# hiding a real world is the same failure as inventing fake ones, just inverted.
+# Valheim's two copy formats both END in digits:
+#     <World>_backup_auto-20260815120940     (odin's schedule)
+#     <World>_backup_20260206-235715         (manual / version upgrade)
+# so anchoring on trailing digits classifies exactly those and leaves any
+# human-chosen name alone. `[0-9]+$` rather than a {14} interval keeps this
+# portable across awk implementations.
+is_backup_copy='/_backup_auto-[0-9]+$/ || /_backup_[0-9]+-[0-9]+$/'
+worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk "!(${is_backup_copy})" | sort -u)"
+backup_copies="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$norm" | awk "${is_backup_copy}" | sort -u)"
 
 echo
 echo "=== Worlds in this archive ==="

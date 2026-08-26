@@ -268,11 +268,16 @@ sed 's#^\./##' "$listing_raw" > "$listing_norm"
 # `set -euo pipefail` that aborts here — so an archive containing no live worlds
 # would kill the script instead of reaching the "found: no worlds at all" error
 # below, which is precisely the message that case needs. awk exits 0 on empty.
-# `_backup_` (not just `_backup_auto-`) because Valheim writes point-in-time
-# copies under BOTH that and a plain `<World>_backup_<ts>` form; matching only
-# one made a real legacy archive report three worlds where it held one.
+# Matches the TIMESTAMP, not the word "backup". Valheim writes point-in-time
+# copies in two forms, both ending in digits:
+#     <World>_backup_auto-20260815120940     (odin's schedule)
+#     <World>_backup_20260206-235715         (manual / version upgrade)
+# Matching only the first made a real legacy archive report three worlds where it
+# held one; matching a bare `_backup_` substring would instead hide a world
+# someone legitimately called `World_backup_legacy`, which start-server.sh's
+# allowlist permits. Anchoring on trailing digits catches exactly the copies.
 archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
-  | awk 'index($0, "_backup_") == 0' | sort -u | tr '\n' ' ')"
+  | awk '!(/_backup_auto-[0-9]+$/ || /_backup_[0-9]+-[0-9]+$/)' | sort -u | tr '\n' ' ')"
 echo "Worlds present in archive: ${archive_worlds:-(none)}"
 
 if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm" \
