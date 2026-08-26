@@ -2,12 +2,14 @@
 
 > **HISTORICAL — EXECUTED AND SUPERSEDED. Do not follow these steps.** This plan was carried out in August 2026; it is kept as the record of what was intended and why, not as a runbook. Several procedures below were deliberately reversed by the work that followed and would now be wrong to apply:
 >
-> - `externalTrafficPolicy: Local` and the pod-node join in the IP-drift rule and dashboard panels — replaced by `Cluster` plus a plain `absent()` (gated on kube-state-metrics reporting), because `Local` broke connectivity whenever the pod rescheduled.
+> - `externalTrafficPolicy: Local` and the pod-node join in the IP-drift rule and dashboard panels — replaced by `Cluster`, because `Local` broke connectivity whenever the pod rescheduled. The rule is now `absent(kube_node_status_addresses{type="ExternalIP", address="34.75.63.41"}) and on() (count(kube_node_status_addresses{type="ExternalIP"}) > 0)`; the `and on()` guard is required, since a bare `absent()` is equally true when kube-state-metrics dies and every node series disappears.
 > - The address `34.26.181.102` throughout — that node was destroyed in the 2026-08-24 roll. The published address is now `play.terasology.org` → `34.75.63.41`, and it lives in `kustomize/overlays/valheim7/prometheusrule-ip.yaml`.
-> - `kustomize/components/observability/dashboard-configmap.yaml` — retired; its surviving panels were folded into `dashboard-tafl-configmap.yaml` (uid `tafl-valheim`), the multi-instance successor.
+> - `kustomize/components/observability/dashboard-configmap.yaml` — retired; its surviving panels were folded into `dashboard-tafl-configmap.yaml` (uid `tafl-valheim`), the multi-instance successor. The drift panel there reads the `ALERTS` series rather than re-testing the address, so it cannot disagree with the rule.
 > - The restore procedure's `rm -rf` before extraction — replaced by staged rename, verification, and rollback. See `docs/restore.md`.
 >
 > For current behaviour read the manifests and `docs/restore.md`, which are the sources of truth.
+
+---
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -796,7 +798,9 @@ And one for the off-cluster half:
 > "Usable node IPs", listing every current node's external IP via
 > `kube_node_status_addresses{type="ExternalIP"}` with no join. The first panel's
 > query dropped the join too, keeping the `or vector(0)` idiom. See
-> `kustomize/components/observability/dashboard-configmap.yaml` for the current panels.
+> `kustomize/components/observability/dashboard-tafl-configmap.yaml` for the current
+> panels — the file named here originally was retired, and its surviving panels live
+> there now.
 
 Two panels. The first is the red box: `1` green means the published IP is correct, `0` red means drift.
 
