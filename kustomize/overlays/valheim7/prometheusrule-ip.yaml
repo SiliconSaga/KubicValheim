@@ -8,88 +8,23 @@ spec:
   groups:
     - name: valheim-published-ip
       rules:
-        # kube_node_status_addresses and kube_pod_info both carry a `node` label, so
-        # the join asks: "is the published IP the external IP of the node currently
-        # running the server?" When the pod moves or the node's IP is recycled the
-        # join yields nothing and absent() fires.
+        # This used to be a node-matching join, because externalTrafficPolicy: Local
+        # made the pod's specific node load-bearing — if the pod wasn't on the node
+        # holding the published IP, players couldn't connect. With
+        # externalTrafficPolicy: Cluster, any node answers on the NodePort, so the
+        # pod's node no longer matters at all. The only thing that can still break
+        # players is the published address ceasing to be a node's external IP at
+        # all (e.g. that node destroyed in a roll) — hence the simple absent() below.
         #
         # UPDATE THE address= VALUE whenever the published IP legitimately changes
         # (and update Namecheap DNS to match).
-        #
-        # Gated with `and on() (count(...) > 0)` so this alert is scoped to "a pod
-        # exists but is on the wrong node" only. Bare absent(), unguarded, also goes
-        # true when NO valheim pod exists at all — i.e. during any ordinary outage —
-        # which would page this as a second, CRITICAL alert alongside ValheimDown,
-        # and its remediation ("check the dashboard's Correct IP right now panel")
-        # is actively misleading with no pod up to report one. Pod-absence is left
-        # entirely to ValheimDown; this alert only fires when a pod is genuinely on
-        # the wrong node. Verified by hand (promtool unavailable in this environment):
-        # absent(<join>) resolves to a single, label-less {} sample (its argument is
-        # a compound expression, not a simple selector, so absent() can't infer
-        # labels from it) valued 1 whenever the join has no match — including both
-        # "wrong node" and "no pod at all". `count(...) > 0` is also label-less {}:
-        # present (1 sample) when a genuinely-serving Running pod exists, and absent
-        # (0 samples, filtered out by `> 0`) when it doesn't. `and on()` matches both
-        # sides on the empty label set, so the result is non-empty only when BOTH
-        # operands have a sample — i.e. only when a serving pod exists AND the join
-        # still found no matching node/IP pair. When no pod exists, the RHS vector is
-        # empty, `and` has nothing to match against, and the whole expression
-        # evaluates to empty (no fire) regardless of what absent() alone would say.
-        #
-        # Both the join and the gate are restricted to pods that are actually
-        # SERVING: phase Running AND not marked for deletion. Phase alone is not
-        # enough on either side, for two separate reasons:
-        #
-        #   - kube_pod_info exists for a pod in ANY phase, including Pending. During
-        #     a `Recreate` rollout a new pod can sit Pending on a different node —
-        #     one it hasn't started serving from yet — before the old one has fully
-        #     gone; an unfiltered join/gate would see "a pod exists" and open while
-        #     the join legitimately mismatches, paging a false drift alert on an
-        #     ordinary restart. `for: 5m` narrows that window but does not close it,
-        #     since Pending can outlast 5m under a slow image pull. Restricting to
-        #     Running closes it.
-        #
-        #   - Phase alone is NOT sufficient, because "Terminating" is not a distinct
-        #     phase in kube-state-metrics — a pod stays reported as Running right up
-        #     until it's actually gone. During a replacement, the OLD pod sitting on
-        #     the published-IP node keeps satisfying `phase="Running"` while it's
-        #     terminating, which would keep the join matching on the old node and
-        #     hide genuine drift to the new pod's node — a false negative on a
-        #     CRITICAL alert, worse than the false positive being fixed here. Each
-        #     side excludes deletion-marked pods with
-        #     `unless on(namespace, pod) kube_pod_deletion_timestamp{...}`, which
-        #     exists only for pods with a non-null deletionTimestamp — i.e. pods
-        #     actually being terminated, not merely Pending or freshly-started ones.
-        #
-        # The join's `and on(namespace, pod)` / `unless on(namespace, pod)` filter
-        # kube_pod_info down to serving pods only, keeping kube_pod_info's own label
-        # set (including `node`) on the LHS of each set operation — `and`/`unless`
-        # never introduce labels from the RHS, so `node` survives intact for the
-        # outer `max by(node)` and the address multiplication that follows.
         - alert: ValheimPublishedIPDrift
           expr: >-
-            (
-              absent(
-                kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"}
-                * on(node) group_left()
-                max by(node) (
-                  kube_pod_info{namespace="kubicvalheim", pod=~"valheim-.*"}
-                  and on(namespace, pod) (kube_pod_status_phase{namespace="kubicvalheim", pod=~"valheim-.*", phase="Running"} == 1)
-                  unless on(namespace, pod) kube_pod_deletion_timestamp{namespace="kubicvalheim", pod=~"valheim-.*"}
-                )
-              )
-            )
-            and on()
-            (
-              count(
-                kube_pod_status_phase{namespace="kubicvalheim", pod=~"valheim-.*", phase="Running"} == 1
-                unless on(namespace, pod) kube_pod_deletion_timestamp{namespace="kubicvalheim", pod=~"valheim-.*"}
-              ) > 0
-            )
+            absent(kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"})
           for: 5m
           labels:
             severity: critical
             watched: "true"
           annotations:
-            summary: "Valheim published IP 34.26.181.102 no longer points at the server"
-            description: "The server pod is not on the node holding 34.26.181.102. Players cannot connect. Check the dashboard's 'Correct IP right now' panel for the address to point DNS at."
+            summary: "valheim7: published IP 34.26.181.102 is no longer any node's external IP"
+            description: "34.26.181.102 does not belong to any current node — it was likely destroyed in a node roll. Repoint DNS at any current node's external IP; under externalTrafficPolicy: Cluster any node works."
