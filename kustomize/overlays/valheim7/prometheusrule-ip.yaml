@@ -16,15 +16,30 @@ spec:
         # players is the published address ceasing to be a node's external IP at
         # all (e.g. that node destroyed in a roll) — hence the simple absent() below.
         #
-        # UPDATE THE address= VALUE whenever the published IP legitimately changes
-        # (and update Namecheap DNS to match).
+        # THE PUBLISHED NAME IS play.terasology.org — a single explicit A record,
+        # on a domain that also carries many unrelated records. The address below
+        # must match whatever that record currently points at; they are two halves
+        # of one fact kept in two places, so changing one without the other either
+        # silences a real outage or invents a fake one. This rule has already been
+        # wrong once: it sat on 34.26.181.102 after a node roll destroyed that node,
+        # firing permanently against an address nothing pointed at any more.
+        #
+        # WHEN THE PUBLISHED IP CHANGES, update BOTH:
+        #   1. the play.terasology.org A record at Namecheap
+        #   2. the address= below (and the summary text)
+        #
+        # NOTE for any future DNS automation: nordri's scripts/update-dns-namecheap.sh
+        # is NOT safe to reuse here. It calls namecheap.domains.dns.setHosts with only
+        # @ and *, and that API REPLACES the domain's entire record set — running it
+        # against terasology.org would delete every other record on the domain. A
+        # single-record updater is needed instead.
         - alert: ValheimPublishedIPDrift
           expr: >-
-            absent(kube_node_status_addresses{type="ExternalIP", address="34.26.181.102"})
+            absent(kube_node_status_addresses{type="ExternalIP", address="34.75.63.41"})
           for: 5m
           labels:
             severity: critical
             watched: "true"
           annotations:
-            summary: "valheim7: published IP 34.26.181.102 is no longer any node's external IP"
-            description: "34.26.181.102 does not belong to any current node — it was likely destroyed in a node roll. Repoint DNS at any current node's external IP; under externalTrafficPolicy: Cluster any node works."
+            summary: "valheim7: play.terasology.org points at 34.75.63.41, which is no longer any node's external IP"
+            description: "34.75.63.41 does not belong to any current node — it was likely destroyed in a node roll, so play.terasology.org now resolves to nothing players can reach. Repoint the A record at any current node's external IP and update this rule's address= to match; under externalTrafficPolicy: Cluster any node serves the NodePort."
