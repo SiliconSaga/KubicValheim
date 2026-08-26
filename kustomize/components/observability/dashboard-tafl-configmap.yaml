@@ -6,6 +6,16 @@ metadata:
     # The kube-prometheus-stack Grafana sidecar auto-imports ConfigMaps with this label.
     grafana_dashboard: "1"
     app.kubernetes.io/part-of: kubicvalheim
+# The `namespace` variable is populated from kube-state-metrics
+# (kube_deployment_status_replicas_available{deployment="valheim"}) rather than from
+# one of our own metrics. A fleet dashboard has to list EVERY instance, including
+# ones that are broken or not yet instrumented — and that is exactly when someone
+# opens it. Keying it off valheim_backup_age_seconds, as this first did, silently
+# hid any instance without the backup-exporter sidecar (an overlay with
+# AUTO_BACKUP="0", or one not yet migrated), so the instance most worth looking at
+# was the one you could not select. kube-state-metrics reports the Deployment
+# whatever state it is in, and needs nothing from us.
+#
 # Both the CPU and Memory panels plot usage against request AND limit. That only
 # works because base/deployment.yaml declares both limits (cpu 1500m, memory
 # 8Gi) — a series querying kube_pod_container_resource_limits for a resource
@@ -26,7 +36,7 @@ data:
             "name": "namespace",
             "type": "query",
             "label": "Namespace",
-            "query": "label_values(valheim_backup_age_seconds, namespace)",
+            "query": "label_values(kube_deployment_status_replicas_available{deployment=\"valheim\"}, namespace)",
             "refresh": 2,
             "sort": 1,
             "includeAll": false,
