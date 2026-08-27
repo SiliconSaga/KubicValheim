@@ -1,6 +1,20 @@
 // Generates a backup job per Valheim instance. Unlike the KubicArk DSL these
 // carry a cron trigger — ARK's jobs are manual-only today.
 //
+// The cron lives HERE and not in backup.Jenkinsfile, and that placement is
+// load-bearing. A Jenkinsfile `triggers` block only reaches the job once Jenkins
+// has built it and read the file, while a seed run rewrites the job's config
+// from this DSL alone. So a Jenkinsfile-only cron is armed by the first build
+// and DISARMED by the next seed — which is exactly what happened: valheim7's
+// timer fired 2026-08-26 03:30 UTC ("Started by timer"), the job was re-seeded
+// later that day, and no timer build has run since. twinhenge and valheim3,
+// never built by hand, never armed at all. Declaring it here means the trigger
+// exists the moment the job does.
+//
+// `H 3 * * *` rather than a fixed `30 3`: H spreads the instances across the
+// hour by job-name hash instead of firing every server's backup simultaneously
+// at one cluster. Jenkins cron is in the CONTROLLER's timezone, which is UTC.
+//
 // Also generates a restore job per instance. Unlike backup, restore has NO
 // cron trigger anywhere (DSL or Jenkinsfile) — it is destructive and manual-only.
 //
@@ -28,6 +42,10 @@ instances.each { inst ->
 
     pipelineJob("${parentGameFolder}/${inst.slug}/backup") {
         displayName("Back up server")
+
+        triggers {
+            cron('H 3 * * *')
+        }
 
         parameters {
             stringParam('slug', inst.slug, 'Instance slug — names the GCS path')

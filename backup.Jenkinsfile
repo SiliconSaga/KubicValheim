@@ -3,16 +3,19 @@ pipeline {
         label 'kubectl && gcloud'
     }
 
-    parameters {
-        string(name: 'slug',      defaultValue: 'valheim7',     description: 'Instance slug — names the GCS path')
-        string(name: 'namespace', defaultValue: 'kubicvalheim', description: 'Namespace holding the server')
-    }
-
-    triggers {
-        // Nightly at 03:30. odin backs up hourly, so this picks up something at
-        // most an hour old whenever it runs — no ordering dependency between the two.
-        cron('30 3 * * *')
-    }
+    // NO `parameters` block here, deliberately — same reasoning as
+    // restore.Jenkinsfile. A Declarative Pipeline's parameters block REPLACES the
+    // job's parameter definitions on every run, so this shared, instance-agnostic
+    // file would overwrite jobs.dsl's per-instance defaults with its own. The
+    // defaults that used to live here were `valheim7`/`kubicvalheim`, so one build
+    // of the twinhenge or valheim3 job was enough to leave that job's timer
+    // pointed at valheim7 — backing the wrong server up, into the wrong GCS path,
+    // and reporting success. jobs.dsl knows each instance's slug and namespace;
+    // this file cannot.
+    //
+    // NO `triggers` block either. The nightly cron is declared in jobs.dsl so it
+    // survives a seed run — a Jenkinsfile trigger is armed by the first build and
+    // silently dropped by the next re-seed. One source, and it is the DSL.
 
     stages {
         stage('Backup') {
