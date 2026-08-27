@@ -65,6 +65,10 @@ scripts/start-server.sh      # data-driven per-instance overlay renderer
   ```
 
   It takes the same three input forms, prints the world names it contains, and touches nothing — no cluster and no running server required, so it works for someone holding only a link. Renaming an existing server's world is a *different* operation: change `WORLD`, apply, let the pod restart, and only then restore — a restore alone cannot do it.
+
+  **Renaming the files does not rename the world.** Valheim stores a world's own name inside the `.fwl`, separate from the filename, and logs both: `Load world: <internal name> (<filename>)`. The twinhenge instance was migrated by renaming `Dedicated.db`/`.fwl` to `twinhenge.*`, and it still logs `Load world: DualCircleCoastalBFs (twinhenge)`. Only the filename — which is what `WORLD` selects — changed. That mismatch is harmless and is in fact useful evidence: an internal name that survives a rename proves the save is genuinely the old world rather than a regenerated one.
+
+  **Building an archive by hand on macOS: set `COPYFILE_DISABLE=1`.** BSD `tar` bundles extended attributes as `._<name>` AppleDouble companions, so a repack on a Mac silently adds `._twinhenge.db` and friends. Valheim ignores them, but they land on the PVC and then propagate into every subsequent backup of that instance.
 - **Architecture:** the Valheim dedicated server is x86_64-only (no ARM build), and its bundled 32-bit SteamCMD segfaults under emulation — so run it on an **amd64** host/cluster (GKE, an amd64 homelab, or a Windows/Linux amd64 box). The manifests are architecture-independent; the game binary is not.
 
 ## License

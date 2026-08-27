@@ -154,6 +154,11 @@ listing_norm=""
 # in the cluster to undo. Before this flips, a failure only needs temp files
 # removed; after it, a failure has left a stopped server and a staged world.
 destructive_started=0
+# Whether a pre-existing world was moved aside. 0 means the PVC had none — a
+# pristine instance — which changes what a failure means: there is nothing to
+# restore and nothing to lose, so recovery is "return it to empty and running"
+# rather than "refuse to start until the world reappears".
+staged=0
 helper="restore-helper"
 prev_replicas=""
 
@@ -187,6 +192,22 @@ cleanup() {
   if ! kctl exec "$helper" -n "$ns" -- true >/dev/null 2>&1; then
     echo "  helper pod unusable — recreating it to complete rollback" >&2
     start_helper >/dev/null 2>&1 || true
+  fi
+
+  # Nothing was staged, so there is nothing to lose and nothing to verify: the
+  # instance had no world when this began. Clear any half-written extraction and
+  # return it to that state. Treating this like a data-loss rollback — refusing
+  # to restart until a <world>.db appears — leaves a server down over a world
+  # that never existed, which is what happened on the first twinhenge attempt.
+  if [ "$staged" -eq 0 ]; then
+    kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local >/dev/null 2>&1 || true
+    kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    if [ -n "$prev_replicas" ]; then
+      kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
+      echo "  ROLLED BACK: the instance had no prior world, so it is back to empty and running (replicas ${prev_replicas})." >&2
+      echo "  Nothing was lost. Fix the cause and re-run." >&2
+    fi
+    return 0
   fi
 
   kctl exec "$helper" -n "$ns" -- sh -c \
@@ -337,7 +358,16 @@ echo "Live instance confirmed: ${ns} on ${KUBE_CONTEXT} is running world '${live
 # above this line is read-only against the cluster — this is the first step
 # that touches the live instance, and only validated input reaches it.
 prev_replicas="$(kctl get deployment valheim -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
-[ -n "$prev_replicas" ] || prev_replicas=1
+# Treat 0 as 1, not as "the state to return to". A restore exists to leave a
+# RUNNING server holding the restored world, and the commonest way to find a
+# deployment already at 0 is that a previous restore attempt failed and left it
+# there — faithfully restoring 0 then makes a successful retry look like another
+# failure, with the world correctly in place and nobody able to connect. It also
+# means two failed attempts in a row can never recover on their own. An operator
+# who deliberately wants it down can scale down after.
+case "${prev_replicas:-0}" in
+  ''|0) prev_replicas=1 ;;
+esac
 echo "Scaling deployment/valheim to 0 in ${ns} (was ${prev_replicas})..."
 destructive_started=1
 kctl scale deployment valheim -n "$ns" --replicas=0
@@ -352,17 +382,34 @@ start_helper
 
 kctl cp "$local_file" "${ns}/${helper}:/tmp/restore.tar.gz"
 
-echo "Existing world on the PVC, last look before it is staged aside:"
-kctl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
+# A PRISTINE instance has no worlds_local at all — Valheim creates it on first
+# save, so a server deployed minutes ago and never played has only the player
+# lists its init container copied. Restoring onto exactly such an instance is the
+# headline use case (revive an old world on a new server), and an unconditional
+# `ls` here fails under `set -e` and aborts the restore before it starts. That is
+# how the twinhenge migration failed: nothing was wrong with the archive or the
+# target, only with this assumption.
+# stderr suppressed: on a pristine instance this test SHOULD fail, and kubectl
+# prints "command terminated with exit code 1" for it — an alarming line in the
+# middle of a run that is going fine.
+if kctl exec "$helper" -n "$ns" -- test -d /world/worlds_local 2>/dev/null; then
+  echo "Existing world on the PVC, last look before it is staged aside:"
+  kctl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
 
-# The old world is MOVED, not deleted. `tar tzf` in step 3 proved the archive
-# can be LISTED; it does not prove extraction can write every file to this PVC
-# — a full volume or an I/O error fails mid-extract. Deleting first and
-# extracting second means such a failure destroys the only copy, and `set -e`
-# then exits with the world already gone. A rename is atomic, cheap (same
-# filesystem), and leaves a complete copy to fall back to.
-kctl exec "$helper" -n "$ns" -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
-echo "Previous world staged at /world/worlds_local.rollback"
+  # The old world is MOVED, not deleted. `tar tzf` in step 3 proved the archive
+  # can be LISTED; it does not prove extraction can write every file to this PVC
+  # — a full volume or an I/O error fails mid-extract. Deleting first and
+  # extracting second means such a failure destroys the only copy, and `set -e`
+  # then exits with the world already gone. A rename is atomic, cheap (same
+  # filesystem), and leaves a complete copy to fall back to.
+  kctl exec "$helper" -n "$ns" -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
+  staged=1
+  echo "Previous world staged at /world/worlds_local.rollback"
+else
+  echo "No existing world on this PVC — the instance has never saved one."
+  echo "  Nothing to stage: a failure from here leaves it as empty as it started,"
+  echo "  so there is no rollback copy to keep and none is needed."
+fi
 
 kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
 
@@ -373,9 +420,13 @@ kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'
 kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.fwl'"
 echo "Extracted world verified: ${world}.db and ${world}.fwl both present and non-empty"
 
-# Only now is the old copy expendable.
-kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local.rollback
-echo "Rollback copy removed — restore committed"
+# Only now is the old copy expendable — and only if there was one.
+if [ "$staged" -eq 1 ]; then
+  kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local.rollback
+  echo "Rollback copy removed — restore committed"
+else
+  echo "Restore committed (no prior world to discard)"
+fi
 
 kctl delete pod "$helper" -n "$ns"
 echo "Helper pod cleaned up"
