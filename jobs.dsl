@@ -14,6 +14,7 @@
 def instances = [
     [slug: 'valheim7',  namespace: 'kubicvalheim',       world: 'Jotunheim'],
     [slug: 'twinhenge', namespace: 'valheim-twinhenge',  world: 'twinhenge'],
+    [slug: 'valheim3',  namespace: 'valheim-valheim3',   world: 'valheim3'],
 ]
 
 def parentGameFolder = "KubicGameHosting/Valheim"
