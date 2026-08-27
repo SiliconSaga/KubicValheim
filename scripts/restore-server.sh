@@ -454,7 +454,33 @@ case "$world_state" in
     # extracting second means such a failure destroys the only copy, and `set -e`
     # then exits with the world already gone. A rename is atomic, cheap (same
     # filesystem), and leaves a complete copy to fall back to.
-    kctl exec "$helper" -n "$ns" -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
+    # A leftover worlds_local.rollback is NOT junk to clear — it is the original
+    # world from an attempt that staged it aside and never put it back. Blindly
+    # `rm -rf`ing it here, as this once did, destroys the last good copy and then
+    # promotes whatever the failed attempt left behind (possibly a partial
+    # extraction) into its place. Retrying a failed restore would quietly consume
+    # the very thing the staging exists to preserve.
+    rollback_state="$(kctl exec "$helper" -n "$ns" -- sh -c \
+      'if [ -d /world/worlds_local.rollback ]; then echo EXISTS; else echo ABSENT; fi' 2>/dev/null \
+      | tr -d '\r' | tail -1)"
+    if [ "$rollback_state" != "ABSENT" ]; then
+      echo "ERROR: /world/worlds_local.rollback already exists in ${ns}." >&2
+      if [ "$rollback_state" = "EXISTS" ]; then
+        echo "  That is the ORIGINAL world from an earlier restore that did not finish" >&2
+        echo "  putting it back. Overwriting it would destroy the last good copy." >&2
+      else
+        echo "  Could not determine whether it exists (got '${rollback_state}'), and" >&2
+        echo "  proceeding risks overwriting an original that may be sitting there." >&2
+      fi
+      echo "" >&2
+      echo "  Resolve it by hand before retrying — inspect both directories:" >&2
+      echo "    kubectl --context ${KUBE_CONTEXT} exec ${helper} -n ${ns} -- ls -la /world/worlds_local /world/worlds_local.rollback" >&2
+      echo "  If .rollback is the world you want, move it back over worlds_local." >&2
+      echo "  If worlds_local is already correct, delete .rollback and re-run." >&2
+      exit 1
+    fi
+
+    kctl exec "$helper" -n "$ns" -- mv /world/worlds_local /world/worlds_local.rollback
     staged=1
     echo "Previous world staged at /world/worlds_local.rollback"
     ;;

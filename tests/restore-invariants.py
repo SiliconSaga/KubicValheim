@@ -29,17 +29,60 @@ def before(a: str, b: str) -> bool:
     return src.index(a) < src.index(b)
 
 
+def pristine_block() -> str:
+    """Just the confirmed-pristine recovery branch.
+
+    Scoping matters: the script scales the Deployment in several places, so an
+    unscoped search for the scale command can match a different one and pass
+    while this branch is wrong.
+    """
+    start = src.index('if [ "$staged" -eq 0 ] && [ "$pristine_confirmed" -eq 1 ]')
+    end = src.index("# Neither staged nor confirmed pristine", start)
+    return src[start:end]
+
+
+def ordered_within(block: str, *anchors: str) -> bool:
+    """True when every anchor appears, in the given order, inside block."""
+    pos = -1
+    for anchor in anchors:
+        try:
+            found = block.index(anchor, pos + 1)
+        except ValueError:
+            return False
+        if found <= pos:
+            return False
+        pos = found
+    return True
+
+
 CHECKS = [
     ("world_existed is recorded before the ls that can fail",
      lambda: before("world_existed=1", "last look before it is staged aside")),
+    # Anchored on the exec'd command, not on a quoted `sh -c` fragment: the
+    # earlier version of this anchor matched a form the script no longer uses and
+    # so failed the moment the command was rewritten. Anchors should track what
+    # the script does, not how it happened to be spelled.
     ("staged=1 is set only after the mv completes",
-     lambda: before("mv /world/worlds_local /world/worlds_local.rollback'", "    staged=1")),
+     lambda: before("-- mv /world/worlds_local /world/worlds_local.rollback", "    staged=1")),
     ("pristine_confirmed is set only inside the ABSENT branch",
      lambda: before("  ABSENT)", "pristine_confirmed=1")),
     ("deletion requires pristine_confirmed, not merely staged==0",
      lambda: '[ "$staged" -eq 0 ] && [ "$pristine_confirmed" -eq 1 ]' in src),
-    ("the removal is verified before the Deployment is scaled back up",
-     lambda: before("rm -rf /world/worlds_local >/dev/null", 'if [ "$after" = "ABSENT" ]')),
+    # Three steps, in order, inside the pristine branch specifically. The middle
+    # one is the point: scaling up is what makes a half-extracted world live, so
+    # it must come after the confirmation, not merely after the removal attempt.
+    ("pristine recovery removes, then CONFIRMS, then scales up — in that order",
+     lambda: ordered_within(
+         pristine_block(),
+         "rm -rf /world/worlds_local >/dev/null",
+         'if [ "$after" = "ABSENT" ]',
+         "kctl scale deployment valheim",
+     )),
+    ("a retry never deletes an existing worlds_local.rollback",
+     lambda: "rm -rf /world/worlds_local.rollback &&" not in src),
+    ("staging aborts when a rollback copy is already present",
+     lambda: before('if [ "$rollback_state" != "ABSENT" ]',
+                    "mv /world/worlds_local /world/worlds_local.rollback")),
     ("an indeterminate world_state aborts instead of guessing",
      lambda: "Refusing to continue: every safe path from here depends on knowing" in src),
     ("prior state is read as output, not as an exit status",
