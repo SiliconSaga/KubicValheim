@@ -7,8 +7,13 @@
 // world is only needed by restore (it's what step 4 of restore-server.sh
 // matches the archive against) — it stays out of the backup instance shape.
 
+// ONE row per instance generates that instance's backup AND restore jobs — add a
+// server here and both appear on the next seed run. `namespace` is spelled out
+// rather than derived because valheim7 is grandfathered onto `kubicvalheim`
+// instead of the `valheim-<slug>` convention every later instance follows.
 def instances = [
-    [slug: 'valheim7', namespace: 'kubicvalheim', world: 'Jotunheim'],
+    [slug: 'valheim7',  namespace: 'kubicvalheim',       world: 'Jotunheim'],
+    [slug: 'twinhenge', namespace: 'valheim-twinhenge',  world: 'twinhenge'],
 ]
 
 def parentGameFolder = "KubicGameHosting/Valheim"
