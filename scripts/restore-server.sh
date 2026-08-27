@@ -154,6 +154,17 @@ listing_norm=""
 # in the cluster to undo. Before this flips, a failure only needs temp files
 # removed; after it, a failure has left a stopped server and a staged world.
 destructive_started=0
+# Whether a pre-existing world was moved aside. 0 means the PVC had none — a
+# pristine instance — which changes what a failure means: there is nothing to
+# restore and nothing to lose, so recovery is "return it to empty and running"
+# rather than "refuse to start until the world reappears".
+staged=0
+# Deliberately separate from `staged`. `staged` means the move completed;
+# `pristine_confirmed` means we positively established there was nothing to move.
+# A failure BETWEEN those two leaves staged=0 with a real world still present, and
+# only this flag stops recovery from deleting it.
+pristine_confirmed=0
+world_existed=0
 helper="restore-helper"
 prev_replicas=""
 
@@ -187,6 +198,56 @@ cleanup() {
   if ! kctl exec "$helper" -n "$ns" -- true >/dev/null 2>&1; then
     echo "  helper pod unusable — recreating it to complete rollback" >&2
     start_helper >/dev/null 2>&1 || true
+  fi
+
+  # Gated on pristine_confirmed, NOT on staged==0. Those differ precisely when it
+  # matters: if the world existed but the `ls` or `mv` failed, staged is still 0
+  # while a REAL world sits in worlds_local — and deleting it here would be the
+  # data loss this whole script exists to prevent, committed by its own recovery.
+  # Only a definitive ABSENT reading earns the right to delete.
+  if [ "$staged" -eq 0 ] && [ "$pristine_confirmed" -eq 1 ]; then
+    kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local >/dev/null 2>&1 || true
+    # Confirm the removal instead of assuming it. If the helper is unusable the
+    # rm silently does nothing, and restarting then points Valheim at a PARTIAL
+    # extraction, which it will happily adopt and start writing to.
+    after="$(kctl exec "$helper" -n "$ns" -- sh -c \
+      'if [ -d /world/worlds_local ]; then echo EXISTS; else echo ABSENT; fi' 2>/dev/null \
+      | tr -d '\r' | tail -1)"
+    if [ "$after" = "ABSENT" ]; then
+      kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      if [ -n "$prev_replicas" ]; then
+        kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
+        echo "  ROLLED BACK: the instance had no prior world, partial extraction cleared, back to empty and running (replicas ${prev_replicas})." >&2
+        echo "  Nothing was lost. Fix the cause and re-run." >&2
+      fi
+    else
+      echo "  ROLLBACK INCOMPLETE — could not confirm the partial extraction was removed." >&2
+      echo "  Deployment deliberately LEFT AT 0 REPLICAS: starting Valheim against a" >&2
+      echo "  half-extracted world would let it adopt and write to the fragments." >&2
+      echo "  Helper '${helper}' left running; inspect with:" >&2
+      echo "    kubectl --context ${KUBE_CONTEXT} exec ${helper} -n ${ns} -- ls -la /world /world/worlds_local" >&2
+    fi
+    return 0
+  fi
+
+  # Neither staged nor confirmed pristine. Touch nothing: this is the one case
+  # where doing less is strictly safer, and the helper stays mounted so a human
+  # can look. The two ways to land here need different words, because one of them
+  # means a real world is probably sitting there untouched.
+  if [ "$staged" -eq 0 ]; then
+    if [ "$world_existed" -eq 1 ]; then
+      echo "  A WORLD WAS PRESENT but staging it aside did not complete." >&2
+      echo "  It is most likely still intact at /world/worlds_local — nothing here" >&2
+      echo "  deleted or moved it. Verify that, then scale back up." >&2
+    else
+      echo "  PRIOR STATE UNKNOWN — the check that determines whether this instance" >&2
+      echo "  had a world did not complete, so nothing has been deleted or restored." >&2
+    fi
+    echo "  Deployment LEFT AT 0 REPLICAS and helper '${helper}' left running:" >&2
+    echo "    kubectl --context ${KUBE_CONTEXT} exec ${helper} -n ${ns} -- ls -la /world /world/worlds_local /world/worlds_local.rollback" >&2
+    echo "  If a worlds_local.rollback exists, THAT is the original — swap it back" >&2
+    echo "  before starting the server, or Valheim will adopt whatever is in its place." >&2
+    return 0
   fi
 
   kctl exec "$helper" -n "$ns" -- sh -c \
@@ -337,7 +398,16 @@ echo "Live instance confirmed: ${ns} on ${KUBE_CONTEXT} is running world '${live
 # above this line is read-only against the cluster — this is the first step
 # that touches the live instance, and only validated input reaches it.
 prev_replicas="$(kctl get deployment valheim -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
-[ -n "$prev_replicas" ] || prev_replicas=1
+# Treat 0 as 1, not as "the state to return to". A restore exists to leave a
+# RUNNING server holding the restored world, and the commonest way to find a
+# deployment already at 0 is that a previous restore attempt failed and left it
+# there — faithfully restoring 0 then makes a successful retry look like another
+# failure, with the world correctly in place and nobody able to connect. It also
+# means two failed attempts in a row can never recover on their own. An operator
+# who deliberately wants it down can scale down after.
+case "${prev_replicas:-0}" in
+  ''|0) prev_replicas=1 ;;
+esac
 echo "Scaling deployment/valheim to 0 in ${ns} (was ${prev_replicas})..."
 destructive_started=1
 kctl scale deployment valheim -n "$ns" --replicas=0
@@ -352,17 +422,84 @@ start_helper
 
 kctl cp "$local_file" "${ns}/${helper}:/tmp/restore.tar.gz"
 
-echo "Existing world on the PVC, last look before it is staged aside:"
-kctl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
+# A PRISTINE instance has no worlds_local at all — Valheim creates it on first
+# save, so a server deployed minutes ago and never played has only the player
+# lists its init container copied. Restoring onto exactly such an instance is the
+# headline use case (revive an old world on a new server), and an unconditional
+# `ls` here fails under `set -e` and aborts the restore before it starts. That is
+# how the twinhenge migration failed: nothing was wrong with the archive or the
+# target, only with this assumption.
+# Ask for the answer as OUTPUT rather than as an exit status. `kctl exec -- test
+# -d` returns 1 both when the directory is absent AND when the exec itself fails,
+# and those must not be conflated: treating a failed exec as "no world here" sends
+# an instance that HAS a world down the pristine path, whose recovery deletes
+# worlds_local. Printing EXISTS/ABSENT makes an unreachable helper produce
+# neither, so it is caught below instead of guessed at.
+world_state="$(kctl exec "$helper" -n "$ns" -- sh -c \
+  'if [ -d /world/worlds_local ]; then echo EXISTS; else echo ABSENT; fi' 2>/dev/null \
+  | tr -d '\r' | tail -1)"
 
-# The old world is MOVED, not deleted. `tar tzf` in step 3 proved the archive
-# can be LISTED; it does not prove extraction can write every file to this PVC
-# — a full volume or an I/O error fails mid-extract. Deleting first and
-# extracting second means such a failure destroys the only copy, and `set -e`
-# then exits with the world already gone. A rename is atomic, cheap (same
-# filesystem), and leaves a complete copy to fall back to.
-kctl exec "$helper" -n "$ns" -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
-echo "Previous world staged at /world/worlds_local.rollback"
+case "$world_state" in
+  EXISTS)
+    # Recorded BEFORE anything else can fail. `staged` says the move completed;
+    # this says a world was there at all. Conflating them is what let a failure
+    # between the two look like "the PVC was empty".
+    world_existed=1
+    echo "Existing world on the PVC, last look before it is staged aside:"
+    kctl exec "$helper" -n "$ns" -- ls -la /world/worlds_local
+
+    # The old world is MOVED, not deleted. `tar tzf` in step 3 proved the archive
+    # can be LISTED; it does not prove extraction can write every file to this PVC
+    # — a full volume or an I/O error fails mid-extract. Deleting first and
+    # extracting second means such a failure destroys the only copy, and `set -e`
+    # then exits with the world already gone. A rename is atomic, cheap (same
+    # filesystem), and leaves a complete copy to fall back to.
+    # A leftover worlds_local.rollback is NOT junk to clear — it is the original
+    # world from an attempt that staged it aside and never put it back. Blindly
+    # `rm -rf`ing it here, as this once did, destroys the last good copy and then
+    # promotes whatever the failed attempt left behind (possibly a partial
+    # extraction) into its place. Retrying a failed restore would quietly consume
+    # the very thing the staging exists to preserve.
+    rollback_state="$(kctl exec "$helper" -n "$ns" -- sh -c \
+      'if [ -d /world/worlds_local.rollback ]; then echo EXISTS; else echo ABSENT; fi' 2>/dev/null \
+      | tr -d '\r' | tail -1)"
+    if [ "$rollback_state" != "ABSENT" ]; then
+      echo "ERROR: /world/worlds_local.rollback already exists in ${ns}." >&2
+      if [ "$rollback_state" = "EXISTS" ]; then
+        echo "  That is the ORIGINAL world from an earlier restore that did not finish" >&2
+        echo "  putting it back. Overwriting it would destroy the last good copy." >&2
+      else
+        echo "  Could not determine whether it exists (got '${rollback_state}'), and" >&2
+        echo "  proceeding risks overwriting an original that may be sitting there." >&2
+      fi
+      echo "" >&2
+      echo "  Resolve it by hand before retrying — inspect both directories:" >&2
+      echo "    kubectl --context ${KUBE_CONTEXT} exec ${helper} -n ${ns} -- ls -la /world/worlds_local /world/worlds_local.rollback" >&2
+      echo "  If .rollback is the world you want, move it back over worlds_local." >&2
+      echo "  If worlds_local is already correct, delete .rollback and re-run." >&2
+      exit 1
+    fi
+
+    kctl exec "$helper" -n "$ns" -- mv /world/worlds_local /world/worlds_local.rollback
+    staged=1
+    echo "Previous world staged at /world/worlds_local.rollback"
+    ;;
+  ABSENT)
+    # Only here — after a definitive ABSENT, not merely a non-zero exit — is it
+    # safe for recovery to delete worlds_local, because we know there was none.
+    pristine_confirmed=1
+    echo "No existing world on this PVC — the instance has never saved one."
+    echo "  Nothing to stage: a failure from here leaves it as empty as it started,"
+    echo "  so there is no rollback copy to keep and none is needed."
+    ;;
+  *)
+    echo "ERROR: could not determine whether ${ns} already has a world." >&2
+    echo "  Expected EXISTS or ABSENT from the helper; got: '${world_state}'" >&2
+    echo "  Refusing to continue: every safe path from here depends on knowing" >&2
+    echo "  which of the two it is. Nothing on the PVC has been touched." >&2
+    exit 1
+    ;;
+esac
 
 kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
 
@@ -373,9 +510,13 @@ kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'
 kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.fwl'"
 echo "Extracted world verified: ${world}.db and ${world}.fwl both present and non-empty"
 
-# Only now is the old copy expendable.
-kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local.rollback
-echo "Rollback copy removed — restore committed"
+# Only now is the old copy expendable — and only if there was one.
+if [ "$staged" -eq 1 ]; then
+  kctl exec "$helper" -n "$ns" -- rm -rf /world/worlds_local.rollback
+  echo "Rollback copy removed — restore committed"
+else
+  echo "Restore committed (no prior world to discard)"
+fi
 
 kctl delete pod "$helper" -n "$ns"
 echo "Helper pod cleaned up"
