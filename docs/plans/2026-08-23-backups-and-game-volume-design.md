@@ -137,7 +137,8 @@ No Alertmanager change is required. The deployed config already routes `watched 
 > since moved to `externalTrafficPolicy: Cluster` — any node answers, so the pod's
 > node is no longer load-bearing — and the alert was simplified to a plain
 > `absent()` on the published address. See the plan doc's Step 3b / Step 2c notes
-> and `kustomize/overlays/valheim7/prometheusrule-ip.yaml` for the current state.
+> and the `tafl` component's `kustomize/fleet/published-ip.yaml` for the current state — the rule was consolidated to one
+> fleet-wide copy and then moved out of this repo entirely.
 
 ## D. heimdall dependency
 

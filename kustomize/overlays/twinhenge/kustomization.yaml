@@ -16,7 +16,6 @@ resources:
   # Generated, gitignored. `kustomize build` fails loudly if you forget to render
   # it — the intended failure mode, versus silently shipping an empty password.
   - secret.yaml
-  - prometheusrule-ip.yaml
 
 components:
   - ../../components/observability

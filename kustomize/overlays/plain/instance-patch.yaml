@@ -12,3 +12,21 @@ spec:
               value: KubicValheim
             - name: WORLD
               value: Midgard
+---
+# The metrics Service carries this instance's display name so the ServiceMonitor's
+# `targetLabels` can stamp it onto every series scraped from it — huginn's game
+# metrics AND the backup exporter's, neither of which would otherwise say which
+# server they came from. Without it the fleet dashboard can only label lines by
+# namespace, and `valheim-valheim3` is not a name anyone wants to read on a graph.
+#
+# Deliberately WITHOUT the `Kubic` prefix that `NAME` carries. NAME is public — it
+# is what players see in Valheim's Community browser, where the prefix is what
+# makes our servers findable as a group by searching "Kubic". This label is
+# internal, seen only on dashboards that show nothing but our own fleet, so the
+# prefix would be noise repeated on every line.
+apiVersion: v1
+kind: Service
+metadata:
+  name: valheim-metrics
+  labels:
+    tafl_server: Valheim

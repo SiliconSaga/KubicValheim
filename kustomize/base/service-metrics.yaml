@@ -4,6 +4,11 @@ metadata:
   name: valheim-metrics
   labels:
     app: valheim
+    # Overridden per overlay (see any overlay's instance-patch.yaml). The default
+    # is a visible placeholder rather than a sensible-looking name on purpose: an
+    # instance that forgets to set one should read as `unnamed` on the dashboard,
+    # not quietly borrow another server's identity or vanish from a `by` clause.
+    tafl_server: unnamed
     # Distinguishes this metrics Service from the game NodePort Service (both are
     # app: valheim) so the observability ServiceMonitor selects only this one.
     app.kubernetes.io/component: metrics

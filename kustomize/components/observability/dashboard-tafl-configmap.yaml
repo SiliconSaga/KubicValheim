@@ -6,15 +6,23 @@ metadata:
     # The kube-prometheus-stack Grafana sidecar auto-imports ConfigMaps with this label.
     grafana_dashboard: "1"
     app.kubernetes.io/part-of: kubicvalheim
-# The `namespace` variable is populated from kube-state-metrics
-# (kube_deployment_status_replicas_available{deployment="valheim"}) rather than from
-# one of our own metrics. A fleet dashboard has to list EVERY instance, including
-# ones that are broken or not yet instrumented — and that is exactly when someone
-# opens it. Keying it off valheim_backup_age_seconds, as this first did, silently
-# hid any instance without the backup-exporter sidecar (an overlay with
-# AUTO_BACKUP="0", or one not yet migrated), so the instance most worth looking at
-# was the one you could not select. kube-state-metrics reports the Deployment
-# whatever state it is in, and needs nothing from us.
+# NO namespace variable. This dashboard used to have one, and picking a server
+# from a dropdown was the wrong shape for a fleet: in practice people play on one
+# server at a time but want to know what ALL of them are doing, and every
+# genuinely fleet-wide panel had to carry a comment explaining that it ignored the
+# variable it appeared to be filtered by. Every panel below now shows the whole
+# fleet with one series per server.
+#
+# Series are named by `tafl_server`, a label the ServiceMonitor copies off the
+# metrics Service (see components/observability/servicemonitor.yaml). Two panels
+# need it on metrics that do NOT come from our own exporters — CPU and memory come
+# from cAdvisor, which only knows the namespace — so those join it back on:
+#
+#   * on(namespace) group_left(tafl_server)
+#       max by (namespace, tafl_server) (up{service="valheim-metrics"})
+#
+# The join source is deliberately unscoped by endpoint: it exists only to carry a
+# label, so either endpoint being scraped is enough to keep a server's line named.
 #
 # Both the CPU and Memory panels plot usage against request AND limit. That only
 # works because base/deployment.yaml declares both limits (cpu 1500m, memory
@@ -22,6 +30,10 @@ metadata:
 # with no limit set returns nothing and renders as a permanently flat line,
 # which reads as broken scraping rather than as "no limit". If a limit is ever
 # removed from the Deployment, drop its series here in the same change.
+#
+# Published-IP drift is NOT here any more. It was never a Valheim condition —
+# one A record serves every hosted game — so it moved to the tafl component
+# (kustomize/fleet/published-ip.yaml) and surfaces on the Heimdall Overview.
 data:
   tafl-valheim.json: |
     {
@@ -33,16 +45,6 @@ data:
       "refresh": "30s",
       "templating": {
         "list": [
-          {
-            "name": "namespace",
-            "type": "query",
-            "label": "Namespace",
-            "query": "label_values(kube_deployment_status_replicas_available{deployment=\"valheim\"}, namespace)",
-            "refresh": 2,
-            "sort": 1,
-            "includeAll": false,
-            "multi": false
-          },
           {
             "name": "datasource",
             "type": "datasource",
@@ -56,23 +58,87 @@ data:
       "panels": [
         {
           "id": 1,
-          "title": "Server Up",
+          "title": "Servers",
           "type": "stat",
-          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "gridPos": { "h": 5, "w": 12, "x": 0, "y": 0 },
+          "description": "One tile per server, scoped to endpoint=\"huginn\" on purpose. The ServiceMonitor produces `up` series for BOTH the game endpoint and the backup-exporter sidecar, so an unscoped query reports UP whenever the sidecar is alive — the backup exporter would mask a dead game, which is the one thing this panel exists to show. A server whose pod is gone entirely stops producing `up` and DISAPPEARS from this panel rather than turning red; that is what the 'Registered vs reporting' panel beside it catches.",
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
           "fieldConfig": { "defaults": { "mappings": [
             { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
           ] } },
-          "description": "Scoped to endpoint=\"huginn\" on purpose. The ServiceMonitor produces `up` series for BOTH the game endpoint and the backup-exporter sidecar, so an unscoped max() reports UP whenever the sidecar is alive — the backup exporter would mask a dead game, which is the one thing this panel exists to show. `or vector(0)` covers the pod vanishing entirely, where the series stops existing rather than reporting 0. prometheusrule.yaml's ValheimDown scopes the same way for the same reason.",
           "targets": [
-            { "expr": "max(up{service=\"valheim-metrics\", endpoint=\"huginn\", namespace=\"$namespace\"}) or vector(0)", "refId": "A" }
+            { "expr": "max by (tafl_server) (up{service=\"valheim-metrics\", endpoint=\"huginn\"})", "refId": "A", "legendFormat": "{{tafl_server}}" }
           ]
         },
         {
           "id": 2,
-          "title": "Backup age (hours)",
+          "title": "Registered vs reporting",
           "type": "stat",
-          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
-          "description": "The backup-exporter reports -1 as its sentinel for 'no local backup exists yet' — the thresholds below key green off 0 specifically so that sentinel reads as unhealthy (base/red) rather than accidentally healthy.",
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+          "description": "The counterpart to the panel on the left, and the reason this dashboard does not rely on `up` alone. Scale an instance to zero and its `up` series stops EXISTING rather than reporting 0, so it silently leaves every by-server panel. kube-state-metrics keeps reporting the Deployment whatever state it is in, so 'registered' counts what should be running and 'reporting' counts what actually answers a scrape. Equal is healthy; registered > reporting means a server vanished rather than failed.",
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+          "targets": [
+            { "expr": "count(kube_deployment_status_replicas_available{deployment=\"valheim\"}) or vector(0)", "refId": "A", "legendFormat": "registered" },
+            { "expr": "count(up{service=\"valheim-metrics\", endpoint=\"huginn\"} == 1) or vector(0)", "refId": "B", "legendFormat": "reporting" }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Players online now",
+          "type": "stat",
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+          "description": "Fleet total across every server. The per-server breakdown is the timeseries below.",
+          "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "green", "value": 1 }
+          ] } } },
+          "targets": [
+            { "expr": "sum(valheim_current_player_count) or vector(0)", "refId": "A" }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Players online",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 5 },
+          "description": "History, not just a current count — shows joins and leaves over time, one line per server. `valheim_current_player_count` comes from huginn, which also emits its own `name` label; this uses `tafl_server` instead so the legend matches every other panel and drops the public Kubic prefix.",
+          "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true } } },
+          "targets": [
+            { "expr": "max by (tafl_server) (valheim_current_player_count)", "refId": "A", "legendFormat": "{{tafl_server}}" }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "CPU (cores)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+          "description": "One usage line per server, plus the per-instance request and limit as fleet-wide reference lines (every instance shares base's values, so plotting them per server would draw three identical lines). Usage comes from cAdvisor, which knows only the namespace, so the server name is joined back on from `up` — see the header comment.",
+          "targets": [
+            { "expr": "sum by (tafl_server) (rate(container_cpu_usage_seconds_total{container=\"valheim-server\"}[5m]) * on(namespace) group_left(tafl_server) max by (namespace, tafl_server) (up{service=\"valheim-metrics\"}))", "refId": "A", "legendFormat": "{{tafl_server}}" },
+            { "expr": "max(kube_pod_container_resource_requests{container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request (each)" },
+            { "expr": "max(kube_pod_container_resource_limits{container=\"valheim-server\", resource=\"cpu\"})", "refId": "C", "legendFormat": "limit (each)" }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Memory (working set)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+          "description": "Same shape as CPU: one line per server, request and limit as per-instance reference lines.",
+          "fieldConfig": { "defaults": { "unit": "bytes" } },
+          "targets": [
+            { "expr": "sum by (tafl_server) (container_memory_working_set_bytes{container=\"valheim-server\"} * on(namespace) group_left(tafl_server) max by (namespace, tafl_server) (up{service=\"valheim-metrics\"}))", "refId": "A", "legendFormat": "{{tafl_server}}" },
+            { "expr": "max(kube_pod_container_resource_requests{container=\"valheim-server\", resource=\"memory\"})", "refId": "B", "legendFormat": "request (each)" },
+            { "expr": "max(kube_pod_container_resource_limits{container=\"valheim-server\", resource=\"memory\"})", "refId": "C", "legendFormat": "limit (each)" }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Local backup age (hours)",
+          "type": "stat",
+          "gridPos": { "h": 5, "w": 8, "x": 0, "y": 21 },
+          "description": "One tile per server. The backup-exporter reports -1 as its sentinel for 'no local backup exists yet' — the thresholds key green off 0 specifically so that sentinel reads as unhealthy (base/red) rather than accidentally healthy.",
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
           "fieldConfig": {
             "defaults": {
               "unit": "h",
@@ -88,15 +154,16 @@ data:
             }
           },
           "targets": [
-            { "expr": "max(valheim_backup_age_seconds{namespace=\"$namespace\"}) / 3600", "refId": "A" }
+            { "expr": "max by (tafl_server) (valheim_backup_age_seconds) / 3600", "refId": "A", "legendFormat": "{{tafl_server}}" }
           ]
         },
         {
-          "id": 3,
-          "title": "Last GCS upload (hours)",
+          "id": 8,
+          "title": "Off-cluster upload age (hours)",
           "type": "stat",
-          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
-          "description": "Same -1 'none exist' sentinel as backup age — thresholds key green off 0 for the same reason, not because -1 is a plausible age.",
+          "gridPos": { "h": 5, "w": 8, "x": 8, "y": 21 },
+          "description": "The panel that matters most and is easiest to misread. It reports the age of the .last-upload marker, which backup-server.sh touches ONLY after a confirmed gsutil upload — so this is the one number that means 'a world left the cluster', as opposed to the panel on its left, which only means 'odin ran'. Same -1 'never' sentinel, same reason the thresholds key green off 0. Red here with green to the left is the specific state that looks fine and is not: local backups piling up on a PVC that dies with the cluster.",
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
           "fieldConfig": {
             "defaults": {
               "unit": "h",
@@ -112,85 +179,30 @@ data:
             }
           },
           "targets": [
-            { "expr": "max(valheim_backup_upload_age_seconds{namespace=\"$namespace\"}) / 3600", "refId": "A" }
-          ]
-        },
-        {
-          "id": 8,
-          "title": "Published IP drift",
-          "type": "stat",
-          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
-          "description": "Reads the ValheimPublishedIPDrift ALERT rather than re-testing the published address. The retired per-instance dashboard hardcoded the IP, which made it a third copy of a fact that lives in the overlay's rule and in Namecheap — and after the 2026-08-24 node roll it showed a permanent red while the server was perfectly reachable. Driving the panel from the alert means the panel and the page can never disagree. 0 is healthy; 1 means the address no longer belongs to any node.",
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "red", "value": 1 }
-                ]
-              }
-            }
-          },
-          "targets": [
-            { "expr": "count(ALERTS{alertname=~\"Valheim.*PublishedIPDrift\", alertstate=\"firing\", namespace=\"$namespace\"}) or vector(0)", "refId": "A" }
+            { "expr": "max by (tafl_server) (valheim_backup_upload_age_seconds) / 3600", "refId": "A", "legendFormat": "{{tafl_server}}" }
           ]
         },
         {
           "id": 9,
-          "title": "Usable node IPs",
-          "type": "table",
-          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 32 },
-          "description": "Every node ExternalIP in the cluster — the answer to 'what do I repoint DNS at?' when drift fires. Under externalTrafficPolicy: Cluster ANY of these serves the NodePort, so every row is a valid choice; pick one and update BOTH the A record and the overlay's rule. Deliberately not filtered by $namespace: node addresses are cluster-wide and do not belong to an instance.",
+          "title": "Local backups retained",
+          "type": "stat",
+          "gridPos": { "h": 5, "w": 8, "x": 16, "y": 21 },
+          "description": "Tarball count on each instance's backup PVC. odin prunes to AUTO_BACKUP_DAYS_TO_LIVE (3), so a steadily climbing count means pruning is not running and the PVC will eventually fill; a count stuck at 1 means each backup is replacing the last.",
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
           "targets": [
-            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"}", "refId": "A", "instant": true, "format": "table" }
+            { "expr": "max by (tafl_server) (valheim_backup_count)", "refId": "A", "legendFormat": "{{tafl_server}}" }
           ]
         },
         {
-          "id": 4,
-          "title": "Players Online",
-          "type": "timeseries",
-          "description": "History, not just a current count — shows joins/leaves over time rather than a single point-in-time number.",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
-          "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10, "spanNulls": true } } },
-          "targets": [
-            { "expr": "max(valheim_current_player_count{namespace=\"$namespace\"})", "refId": "A", "legendFormat": "players" }
-          ]
-        },
-        {
-          "id": 5,
-          "title": "CPU (cores)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-          "targets": [
-            { "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"valheim-server\"}[5m]))", "refId": "A", "legendFormat": "cpu" },
-            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "B", "legendFormat": "request" },
-            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"cpu\"})", "refId": "C", "legendFormat": "limit" }
-          ]
-        },
-        {
-          "id": 6,
-          "title": "Memory (working set)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-          "fieldConfig": { "defaults": { "unit": "bytes" } },
-          "targets": [
-            { "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"valheim-server\"})", "refId": "A", "legendFormat": "memory" },
-            { "expr": "sum(kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"valheim-server\", resource=\"memory\"})", "refId": "B", "legendFormat": "request" },
-            { "expr": "sum(kube_pod_container_resource_limits{namespace=\"$namespace\", container=\"valheim-server\", resource=\"memory\"})", "refId": "C", "legendFormat": "limit" }
-          ]
-        },
-        {
-          "id": 7,
+          "id": 10,
           "title": "Player connects / disconnects",
           "type": "logs",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player.",
-          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+          "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Now unfiltered across the fleet, so `showLabels` is on — the stream's k8s_namespace_name is what tells you which server a line came from, since the log text itself does not say. Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player. The namespace regex has to match both `kubicvalheim` (valheim7 is grandfathered) and the `valheim-<slug>` convention everything since follows.",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
           "options": {
             "showTime": true,
-            "showLabels": false,
+            "showLabels": true,
             "showCommonLabels": false,
             "wrapLogMessage": true,
             "prettifyLogMessage": false,
@@ -200,17 +212,27 @@ data:
           },
           "targets": [
             {
-              "expr": "{k8s_namespace_name=\"$namespace\"} |= \"Got character ZDOID\"",
+              "expr": "{k8s_namespace_name=~\"kubicvalheim|valheim-.+\"} |= \"Got character ZDOID\"",
               "refId": "A",
               "legendFormat": "join",
               "datasource": { "type": "loki", "uid": "${datasource}" }
             },
             {
-              "expr": "{k8s_namespace_name=\"$namespace\"} |= \"Closing socket\"",
+              "expr": "{k8s_namespace_name=~\"kubicvalheim|valheim-.+\"} |= \"Closing socket\"",
               "refId": "B",
               "legendFormat": "leave",
               "datasource": { "type": "loki", "uid": "${datasource}" }
             }
+          ]
+        },
+        {
+          "id": 11,
+          "title": "Usable node IPs",
+          "type": "table",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 36 },
+          "description": "Every node ExternalIP in the cluster — the answer to 'what do I repoint DNS at?' Kept on this dashboard even though the drift ALERT moved to tafl and the Heimdall Overview, because this is the remediation aid and a Valheim alert is what lands you here. Under externalTrafficPolicy: Cluster ANY of these serves the NodePorts, so every row is a valid choice; pick one and update BOTH the A record and tafl's kustomize/fleet/published-ip.yaml.",
+          "targets": [
+            { "expr": "kube_node_status_addresses{type=\"ExternalIP\"}", "refId": "A", "instant": true, "format": "table" }
           ]
         }
       ]
