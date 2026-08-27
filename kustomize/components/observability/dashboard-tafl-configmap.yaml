@@ -120,7 +120,7 @@ data:
           "title": "Published IP drift",
           "type": "stat",
           "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
-          "description": "Reads the ValheimPublishedIPDrift ALERT rather than re-testing the published address. The retired per-instance dashboard hardcoded the IP, which made it a third copy of a fact that lives in the overlay's rule and in Namecheap — and after the 2026-08-24 node roll it showed a permanent red while the server was perfectly reachable. Driving the panel from the alert means the panel and the page can never disagree. 0 is healthy; 1 means the address no longer belongs to any node.",
+          "description": "FLEET-WIDE, not per-instance — this panel deliberately ignores $namespace and shows the same value whichever instance is selected. play.terasology.org is one A record shared by every instance (they differ only by port), so the address ceasing to be a node address affects all of them at once; kustomize/fleet/published-ip.yaml is a single rule for that reason. Reads the ALERT rather than re-testing the address, so the panel and the page cannot disagree, and the address itself stays in one place. 0 is healthy; 1 means no node holds the published address and NO instance is reachable by name.",
           "fieldConfig": {
             "defaults": {
               "unit": "short",

@@ -14,7 +14,6 @@ resources:
   - namespace.yaml
   - ../../base
   - secret.yaml
-  - prometheusrule-ip.yaml
 
 # Observability and backups are ON for a generated instance, matching what every
 # hand-written overlay ended up needing. This script previously emitted neither,

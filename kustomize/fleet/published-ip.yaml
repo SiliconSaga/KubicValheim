@@ -1,0 +1,55 @@
+# Published-IP drift — ONE rule for the whole fleet, deliberately not per-instance.
+#
+# `play.terasology.org` is a single A record that every Valheim instance shares;
+# they are distinguished only by port, which is the entire reason base uses
+# externalTrafficPolicy: Cluster. So the address ceasing to be a node address is
+# ONE incident affecting all of them, not one incident per server.
+#
+# This started life as a copy inside each overlay. That produced a critical,
+# watched-tier page PER NAMESPACE for a single DNS failure, because Alertmanager
+# groups by [alertname, namespace] — three instances meant three pages saying the
+# same thing, which is precisely the alert-fatigue pattern the tiering work
+# existed to avoid. It also meant the published address was written down in as
+# many places as there were instances, each free to go stale independently, and
+# one of them already had.
+#
+# Applied ONCE, to the kubicvalheim namespace. Prometheus discovers rules
+# cluster-wide (ruleSelector: {}), so the namespace here is only a home, not a
+# scope. It is NOT part of any instance overlay — adding a server must not add
+# another copy of this.
+#
+# WHEN THE PUBLISHED IP CHANGES, this file and the Namecheap A record are now the
+# only two places to update.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: valheim-published-ip
+  namespace: kubicvalheim
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim
+spec:
+  groups:
+    - name: valheim-published-ip
+      rules:
+        # The `and on()` guard is load-bearing, not decoration. A bare absent()
+        # is equally true when kube-state-metrics is down, because then EVERY
+        # node-address series disappears — so a telemetry outage would raise a
+        # critical page claiming the published IP had drifted, whose runbook says
+        # "repoint DNS", which would be actively wrong. Requiring at least one
+        # ExternalIP series to exist means this fires only when the exporter is
+        # reporting AND this specific address is missing from what it reports.
+        - alert: ValheimPublishedIPDrift
+          expr: >-
+            absent(kube_node_status_addresses{type="ExternalIP", address="34.75.63.41"})
+            and on() (count(kube_node_status_addresses{type="ExternalIP"}) > 0)
+          for: 5m
+          labels:
+            severity: critical
+            watched: "true"
+            # No `namespace` label, on purpose. Adding one would both misattribute
+            # a fleet-wide condition to a single instance and split the alert into
+            # one Alertmanager group per namespace — the multiple-pages problem
+            # this rule exists to fix.
+          annotations:
+            summary: "play.terasology.org points at 34.75.63.41, which is no longer any node's external IP — ALL Valheim instances are unreachable by name"
+            description: "34.75.63.41 does not belong to any current node, so every instance behind play.terasology.org is unreachable by that name: valheim7 (:32456), twinhenge (:32476), valheim3 (:32486). The servers themselves are almost certainly fine — under externalTrafficPolicy: Cluster ANY node's external IP serves these NodePorts. Repoint the A record at any current node address and update kustomize/fleet/published-ip.yaml to match. Check the Tafl dashboard's 'Usable node IPs' panel for current addresses."
