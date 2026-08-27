@@ -15,6 +15,15 @@ spec:
       # port — making the operator log "port not found".
       app: valheim
       app.kubernetes.io/component: metrics
+  # Copy the Service's `tafl_server` label onto every series from this target.
+  # This is what lets the fleet dashboard say "Twinhenge" instead of
+  # "valheim-twinhenge", and it applies to BOTH endpoints below — the backup
+  # exporter emits no identifying labels of its own, so without this its metrics
+  # are distinguishable only by namespace. huginn does emit `name`, but that is
+  # the public NAME with its Kubic prefix; `tafl_server` is the internal one.
+  targetLabels:
+    - tafl_server
+
   endpoints:
     - port: huginn          # named TCP port on the valheim-metrics Service
       path: /metrics
