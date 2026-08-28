@@ -71,52 +71,82 @@ data:
       "panels": [
         {
           "id": 1,
-          "title": "Servers",
-          "type": "stat",
+          "title": "Server status",
+          "type": "state-timeline",
           "gridPos": {
             "h": 5,
             "w": 12,
             "x": 0,
             "y": 0
           },
-          "description": "One tile per server, scoped to endpoint=\"huginn\" on purpose. The ServiceMonitor produces `up` series for BOTH the game endpoint and the backup-exporter sidecar, so an unscoped query reports UP whenever the sidecar is alive — the backup exporter would mask a dead game, which is the one thing this panel exists to show. A server whose pod is gone entirely stops producing `up` and DISAPPEARS from this panel rather than turning red; that is what the 'Registered vs reporting' panel beside it catches. An empty `tafl_server` is renamed to `unlabelled` rather than dropped: Grafana has no name for an empty label and falls back to calling the field \"Value\", but filtering the series out instead would hide an unmigrated instance, which is the one most worth seeing. Instant query, not a range one: a stat tile means 'right now', and reducing a range would keep rendering a tile for any series that existed earlier in the window — which is how a fourth `unlabelled` server appeared after the relabel, built from data older than the change.",
-          "options": {
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "textMode": "value_and_name"
-          },
+          "description": "Up/down per server across the window, one row each. Replaces the stat tiles this started as: tiles grow sideways with the fleet until none of them are legible, and a timeline grows downward instead. It also shows something tiles could not — whether a server has been solidly up or has been flapping. Scoped to endpoint=\"huginn\": the ServiceMonitor emits `up` for the backup-exporter sidecar too, and an unscoped query would report UP whenever the sidecar is alive, letting it mask a dead game. A server scaled to zero stops producing `up` entirely and leaves a GAP rather than a red band — that is what 'Registered vs reporting' beside this is for. Unlike the stat panels this is a range query, because history is the point; it filters empty `tafl_server` so a pre-rename row does not appear as a phantom server.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (tafl_server) (up{service=\"valheim-metrics\", endpoint=\"huginn\", tafl_server!=\"\"})",
+              "legendFormat": "{{tafl_server}}"
+            }
+          ],
           "fieldConfig": {
             "defaults": {
+              "custom": {
+                "lineWidth": 0,
+                "fillOpacity": 80,
+                "spanNulls": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              },
               "mappings": [
                 {
                   "type": "value",
                   "options": {
                     "0": {
                       "text": "DOWN",
-                      "color": "red"
+                      "color": "red",
+                      "index": 0
                     },
                     "1": {
                       "text": "UP",
-                      "color": "green"
+                      "color": "green",
+                      "index": 1
                     }
                   }
                 }
-              ]
-            }
+              ],
+              "noValue": "no data"
+            },
+            "overrides": []
           },
-          "targets": [
-            {
-              "expr": "label_replace(max by (tafl_server) (up{service=\"valheim-metrics\", endpoint=\"huginn\"}), \"tafl_server\", \"unlabelled\", \"tafl_server\", \"^$\")",
-              "refId": "A",
-              "legendFormat": "{{tafl_server}}",
-              "instant": true
+          "options": {
+            "mergeValues": true,
+            "showValue": "never",
+            "alignValue": "center",
+            "rowHeight": 0.9,
+            "perPage": 20,
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": false
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
             }
-          ]
+          }
         },
         {
           "id": 2,
