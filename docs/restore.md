@@ -2,6 +2,8 @@
 
 The world lives on the `valheim-data` PVC. Restoring means stopping the server, replacing the world files, and starting it again.
 
+**Read [world-identity.md](world-identity.md) first** if the archive came from a different instance, or if you are not certain which world is inside it. The name the instance is configured for has to match the name in the archive before any of the steps below can succeed, and getting that wrong produces a fresh empty world rather than an error.
+
 > **A restore that silently produces a FRESH world looks identical to success from outside.** Always verify against a specific known object placed in-world before the backup — not merely that the server started.
 
 > **Prefer the Jenkins job.** `scripts/restore-server.sh` (run by the per-instance *Restore server (DESTRUCTIVE)* job) performs every step below plus guards this manual path cannot enforce: it pins an explicit kubectl context, checks the live Deployment's `WORLD` matches, and on failure restores the staged world and the previous replica count automatically — **with one deliberate exception: if it cannot verify the world is back in place, it leaves the Deployment at zero replicas** rather than restarting a server with no world for it to load, since Valheim would generate a fresh one and overwrite the evidence. A restore that ends with the server still down is reporting that it could not recover, not that it forgot to. Use this runbook to understand what the script does, or when Jenkins is unavailable — and when following it manually, **pass `--context` on every command**, because `ws k8s` uses the armed guard scope while a bare `kubectl` inherits whatever `current-context` happens to be, which on a workstation is regularly the wrong cluster.

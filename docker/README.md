@@ -2,6 +2,8 @@
 
 The zero-Kubernetes way to run KubicValheim: the same pinned community image and the same Huginn settings as the Kubernetes flavors, in a single `docker-compose.yml`.
 
+This page is self-contained — everything you need to run the Docker flavor is here. The [documentation index](../docs/README.md) covers the Kubernetes flavors and the shared operational topics.
+
 ## Quickstart
 
 Copy the example env and set a real password (>= 5 chars, must not contain the server NAME):
