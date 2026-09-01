@@ -35,8 +35,27 @@ spec:
         # `max` vs `min`/`sum` doesn't matter — only the grouping does), and that
         # surviving series still carries `namespace`, which is all the
         # annotations below reference.
+        #
+        # The trailing `unless` is what makes a server switch-off-able. Without it,
+        # scaling an instance to zero is INDISTINGUISHABLE from it crashing: both
+        # leave zero available replicas, so deliberately parking a server pages the
+        # phone at the watched tier until someone scales it back up. That is the
+        # noise that teaches an operator to ignore this channel.
+        #
+        # `spec_replicas` is the intent signal and needs no new plumbing: it is
+        # kube-state-metrics reporting what the Deployment ASKS for, so
+        # `spec == 0` means a human turned it off while `available == 0 with
+        # spec >= 1` means it fell over. Under GitOps the intent is even stronger,
+        # because selfHeal forces dormancy to be committed as `replicas: 0` rather
+        # than applied by hand.
+        #
+        # Deliberately NOT a custom `lifecycle: dormant` label: kube-state-metrics
+        # exposes no arbitrary object labels unless they are added to its
+        # --metric-labels-allowlist, so that route needs a heimdall change to
+        # produce any queryable series at all. Verified on this cluster:
+        # kube_deployment_labels returns nothing.
         - alert: ValheimDown
-          expr: max by (namespace) ( (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0) )
+          expr: (max by (namespace) ( (kube_deployment_status_replicas_available{deployment="valheim"} == 0) or (up{service="valheim-metrics", endpoint="huginn"} == 0) )) unless on (namespace) (max by (namespace) (kube_deployment_spec_replicas{deployment="valheim"}) == 0)
           for: 3m
           labels:
             severity: critical

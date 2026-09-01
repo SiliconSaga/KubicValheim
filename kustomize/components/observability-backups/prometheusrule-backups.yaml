@@ -24,6 +24,18 @@ spec:
   groups:
     - name: valheim-backups
       rules:
+        # DORMANCY NEEDS NO GUARD HERE, unlike ValheimDown in the sibling
+        # observability component. Every alert in this group keys on a metric the
+        # backup-exporter SIDECAR emits, so scaling an instance to zero removes the
+        # pod and the series with it — an absent series matches nothing, and none of
+        # these can fire. `ValheimBackupExporterDown` is safe for the same reason:
+        # `up` stops existing rather than reporting 0 when the target leaves service
+        # discovery.
+        #
+        # Recorded because the opposite is the tempting assumption: a parked server
+        # obviously stops producing backups, so it LOOKS like it should need
+        # silencing. Adding an `unless spec_replicas == 0` here would be dead
+        # weight that reads as load-bearing.
         # odin's hourly AUTO_BACKUP has stopped producing. 2h allows one missed run
         # before complaining. -1 means no tarballs exist at all, which is also wrong
         # once AUTO_BACKUP is on, so the >= 0 guard is deliberately omitted for the
