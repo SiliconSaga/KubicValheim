@@ -2,7 +2,7 @@
 
 The same core runs three ways. A single Kustomize `base/` — Deployment, UDP NodePort Service, ClusterIP metrics Service, PVCs, player-list ConfigMap — is the one source of truth. Each platform extra is an additive Kustomize **component**, and overlays compose them.
 
-The pod spec is identical across all three. The only thing that differs is the *source* of the `valheim-secrets` Secret.
+The two Kubernetes flavors share that base pod spec exactly; the only thing that differs between them is the *source* of the `valheim-secrets` Secret (a plain Secret in flavor 2, an ExternalSecret in flavor 3) and the observability resources flavor 3 adds. Flavor 1 has no pod and no Kubernetes Secret at all — it configures the same image through Compose and an `.env` file.
 
 ## Flavor 1 — Plain Docker
 
@@ -35,17 +35,19 @@ Observability comes with it: metrics scrape into heimdall's Prometheus and Grafa
 | Component | Adds | Opt-in |
 |---|---|---|
 | `observability` | ServiceMonitor + Grafana dashboard | yes |
+| `observability-backups` | backup alert rules — separate because they assume `AUTO_BACKUP=1` | yes |
 | `secrets-openbao` | ExternalSecret for `valheim-secrets` | yes |
 | `backup` | inert S3 seam, reserved for the Phase-3 CronJob | yes |
 
 ## Repository layout
 
-```
+```text
 docker/                      # Flavor 1: docker-compose + .env.example + README
 kustomize/
   base/                      # the shared core (one source of truth)
   components/
     observability/           # ServiceMonitor + Grafana dashboard
+    observability-backups/   # backup alert rules (assume AUTO_BACKUP=1)
     secrets-openbao/         # ExternalSecret for valheim-secrets
     backup/                  # inert S3 seam scaffold (Phase 3)
   overlays/

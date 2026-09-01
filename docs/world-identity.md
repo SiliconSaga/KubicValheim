@@ -34,7 +34,7 @@ Archives are **`.tar.gz`**, not zip.
 
 Valheim stores a world's own name inside the `.fwl`, separate from the filename, and logs both:
 
-```
+```text
 Load world: <internal name> (<filename>)
 ```
 

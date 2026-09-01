@@ -2,7 +2,7 @@
 
 The world lives on the `valheim-data` PVC. Restoring means stopping the server, replacing the world files, and starting it again.
 
-**Read [world-identity.md](world-identity.md) first** if the archive came from a different instance, or if you are not certain which world is inside it. The name the instance is configured for has to match the name in the archive before any of the steps below can succeed, and getting that wrong produces a fresh empty world rather than an error.
+**Read [world-identity.md](world-identity.md) first** if the archive came from a different instance, or if you are not certain which world is inside it. The name the instance is configured for has to match the name in the archive before the world files are cleared or extracted — inspecting and listing an archive is safe regardless — and getting that wrong produces a fresh empty world rather than an error.
 
 > **A restore that silently produces a FRESH world looks identical to success from outside.** Always verify against a specific known object placed in-world before the backup — not merely that the server started.
 
@@ -29,7 +29,7 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
 
 **Copy and validate before destroying anything.** The order below matters: the archive is copied in and proven readable with a non-destructive `tar tzf` listing *before* the existing world is touched. If the archive is truncated or corrupt, `tar tzf` fails, the world on the PVC is still completely intact, and you can pick a different backup and try again — a bad backup costs you nothing. Only once the archive has passed that check does the world dir get cleared.
 
-**Restoring across instances is supported.** Any readable archive is a valid input — pasting the public link to some other server's world zip into the restore job is a deliberate workflow, which is much of the point of publishing those links. What is checked is that the archive matches the world this instance is *configured for*, not where the archive came from. So to revive an old world on a fresh server, set that server's `WORLD` to the old world's name and point the job at the zip.
+**Restoring across instances is supported.** Any readable archive is a valid input — pasting the public link to some other server's world tarball into the restore job is a deliberate workflow, which is much of the point of publishing those links. What is checked is that the archive matches the world this instance is *configured for*, not where the archive came from. So to revive an old world on a fresh server, set that server's `WORLD` to the old world's name and point the job at the `.tar.gz`.
 
 **Readable is not the same as correct.** `tar tzf` proves the archive is a valid, uncorrupted tarball — it says nothing about *which world* is inside it. An archive containing a different world would pass `tar tzf` cleanly, and clearing `worlds_local` and extracting it would then restore a world nobody asked for, onto an instance that no longer has its own world to fall back to. So after the readability check, also confirm the listing actually names *this* instance's world files before anything is cleared — grep it for `worlds_local/<WORLD>.db` and `worlds_local/<WORLD>.fwl`, where `<WORLD>` is the world name this instance is configured with (from its overlay's `instance-patch.yaml`, or `NAME`/`WORLD` in the running pod's env). If either is missing, **STOP** — do not proceed to the `rm -rf` below. The world on the PVC is still intact; go pick the correct archive instead.
 

@@ -16,11 +16,20 @@ Pruning is on (`AUTO_BACKUP_REMOVE_OLD=1`, `DAYS_TO_LIVE=3`), so the backups vol
 
 A nightly Jenkins job ships the newest archive to `gs://kubic-game-hosting/valheim/<slug>/<ts>/` and touches a `.last-upload` marker. The marker is what makes the freshness metric mean *"a backup left the cluster"* rather than *"odin ran"* — those are different claims, and only the first one survives losing the cluster.
 
-**Jenkins cron is UTC.** A `cron('30 3 * * *')` spec fires at 03:30 UTC, which is 23:30 Eastern — not overnight local. Archive names from Jenkins runs are stamped UTC accordingly, while a hand-run from a workstation stamps local time.
+**Jenkins cron is UTC.** A `cron('30 3 * * *')` spec fires at 03:30 UTC, which is the *previous* evening in Eastern — 23:30 EDT in summer, 22:30 EST in winter — not overnight local. Archive names from Jenkins runs are stamped UTC accordingly, while a hand-run from a workstation stamps local time.
 
 ## Metrics and alerts
 
-A busybox sidecar exposes `valheim_backup_{age,count,bytes,upload_age}_seconds` on `/metrics.txt`. Alerts route to the phone through heimdall's existing `watched: "true"` route.
+A busybox sidecar exposes four gauges on `/metrics.txt`. Only the two age metrics are in seconds:
+
+| Metric | Meaning |
+|---|---|
+| `valheim_backup_age_seconds` | age of the newest local tarball; `-1` when none exist |
+| `valheim_backup_upload_age_seconds` | age of the last off-cluster upload marker; `-1` when never uploaded |
+| `valheim_backup_count` | how many local tarballs are retained |
+| `valheim_backup_bytes` | size of the newest local tarball |
+
+Alerts route to the phone through heimdall's existing `watched: "true"` route.
 
 The backup alerts live in the opt-in `components/observability-backups`, separately from the main observability component, because they assume `AUTO_BACKUP=1` — enabling them against an instance with backups off would page about a condition that is deliberate.
 

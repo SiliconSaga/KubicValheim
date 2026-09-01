@@ -13,7 +13,7 @@ On Kubernetes these are exposed as NodePorts — `32456` game and `32457` query 
 
 **Which one you give a player depends on how they are joining, and this is the part that costs a live debugging session:**
 
-- **Joining by address, in game.** Valheim's *Join by IP* dialog wants the **game** port — `<host>:32456`. Entering the query port here fails.
+- **Joining by address in-game.** Valheim's *Join by IP* dialog wants the **game** port — `<host>:32456`. Entering the query port here fails.
 - **Finding the server in the Steam server browser.** Adding a server to Steam's favourites wants the **query** port — `<host>:32457`. That is what the browser protocol answers on.
 
 Both are correct for their own mechanism. Allow UDP on both ports through the host firewall regardless of which you hand out.

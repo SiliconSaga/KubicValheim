@@ -15,13 +15,13 @@ The Valheim dedicated server is **x86_64-only** — there is no ARM build, and t
 | Understand the three flavors | [`docs/flavors.md`](docs/flavors.md) |
 | Add another server instance | [`docs/instances.md`](docs/instances.md) |
 | Let players in | [`docs/networking.md`](docs/networking.md) |
-| Recover a world | [`docs/restore.md`](docs/restore.md) |
+| Recover a world | [`docs/world-identity.md`](docs/world-identity.md) — read before `restore.md` |
 
 Full documentation index: [`docs/README.md`](docs/README.md).
 
 ## Layout
 
-```
+```text
 docker/                      # Flavor 1: docker-compose + env + README
 kustomize/
   base/                      # the shared core (one source of truth)
