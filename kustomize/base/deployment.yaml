@@ -107,8 +107,28 @@ spec:
               value: "0"
             - name: AUTO_BACKUP_REMOVE_OLD
               value: "1"
+            # 1 day = 24 hourly tarballs, down from 3 days = 72.
+            #
+            # This volume is the largest of the three on the busiest instance —
+            # valheim-valheim3's backups PVC measured 7.46 GB against a 0.48 GB
+            # world, because 72 archives of a ~130 MB world is most of what the
+            # claim holds. Cutting to 24 gives back roughly two thirds of that,
+            # on every instance, and the volume is itself snapshotted by the
+            # cluster backup, so the saving lands twice.
+            #
+            # What a shorter local window costs, and why it is affordable: these
+            # hourly archives are the FAST path — undo a bad build or a griefing
+            # within the last day, without leaving the cluster. Anything older is
+            # served by the two off-cluster layers that already exist, both
+            # daily: the nightly Jenkins upload to GCS, and Velero's 30-day
+            # snapshot schedule. Losing hours 25-72 loses hourly granularity for
+            # those days, not the days themselves.
+            #
+            # Raise it back if an incident is ever discovered more than a day
+            # late AND day-boundary recovery proves too coarse. That has not
+            # happened; 3 was a first guess, not a measurement.
             - name: AUTO_BACKUP_DAYS_TO_LIVE
-              value: "3"
+              value: "1"
           ports:
             - name: game
               containerPort: 2456

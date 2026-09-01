@@ -5,7 +5,7 @@
 # valheim-data with `subPath: backups` at /home/steam/backups does, since
 # /home/steam/backups would then BE <savedir>/backups — every hourly tarball would
 # contain every previous tarball. Size roughly doubles per run, and with an hourly
-# AUTO_BACKUP_SCHEDULE and AUTO_BACKUP_DAYS_TO_LIVE=3 (72 retained) the world PVC
+# AUTO_BACKUP_SCHEDULE and AUTO_BACKUP_DAYS_TO_LIVE=1 (24 retained) the world PVC
 # fills within about a day, at which point world writes start failing. Upstream's
 # own docker-compose puts /home/steam/backups on a separate volume for this reason.
 apiVersion: v1
