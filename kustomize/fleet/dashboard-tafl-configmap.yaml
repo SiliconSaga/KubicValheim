@@ -79,7 +79,7 @@ data:
             "x": 0,
             "y": 0
           },
-          "description": "State per server across the window, one row each. Four states, because 'off on purpose' and 'broken' are different facts and colouring both red trains you to ignore the panel: BLUE dormant (spec replicas 0 — a human parked it), GREEN online, YELLOW scrapeable but not accepting players (valheim_online 0 — the cautionary middle), RED wanted but not running. A timeline rather than the stat tiles this began as: tiles grow sideways until none are legible, a timeline grows downward, and it shows whether a server was solidly up or flapping. KEYED ON NAMESPACE, NOT `tafl_server`, and that is the whole trick — `tafl_server` is a target label copied from the Service, so it exists only while something is being scraped, and a dormant server would vanish from this panel entirely rather than show blue. kube-state-metrics keeps reporting the Deployment whatever state it is in, so the state expression is built from `kube_deployment_spec_replicas` and only consults scrape-derived series for the live states. The display name is derived from the namespace by label_replace; real `tafl_server` names would need that label added to kube-state-metrics' --metric-labels-allowlist in heimdall, which is the productionisation step. Resource and player-count panels below still lose a dormant server, which is correct — there is genuinely nothing to plot. THE THRESHOLD STEPS AND THE VALUE MAPPINGS MUST AGREE, and both are required: on a state-timeline the threshold colour wins, so the mappings supply only the text. A single base step painted all four states the same colour and every server read DORMANT-blue regardless of what it was actually doing — a fleet that looks deliberately parked while it is in fact running. If a state is ever added, add it in both places.",
+          "description": "Per-server state over time. Blue is dormant (deliberately scaled to zero), green online, yellow running but not accepting players, red wanted but not running.",
           "targets": [
             {
               "refId": "A",
@@ -176,7 +176,7 @@ data:
             "x": 12,
             "y": 0
           },
-          "description": "The counterpart to the timeline, and the reason this dashboard does not rely on `up` alone. Scale an instance to zero and its `up` series stops EXISTING rather than reporting 0, so it silently leaves every scrape-derived panel — while kube-state-metrics keeps reporting the Deployment whatever state it is in. Read it as one invariant: REGISTERED = DORMANT + REPORTING. When that holds, every server is either deliberately parked or healthy, and there is nothing to do. When registered exceeds dormant + reporting, the difference is servers that are supposed to be running and are not — the one number worth acting on. Splitting 'dormant' out of what used to be a bare registered-vs-reporting gap is what makes a parked server readable as intent rather than as a shortfall. `reporting` is JOINED against `spec_replicas > 0`, and that join is what keeps the invariant true during a transition rather than only at rest. The two inputs move at different speeds: kube-state-metrics reports `spec_replicas = 0` as soon as it scrapes the changed Deployment, while `up` keeps its last healthy sample until service discovery drops the target and staleness processing runs. Observed live while scaling an instance down — the unjoined form read `registered 3, dormant 1, reporting 3`, four servers' worth of state for three servers, while the joined form read `reporting 2` and balanced. `reporting` also counts NAMESPACES rather than `up` series: during a relabel a target briefly has both an old and a new series, which counted 5 of 3 servers until the stale ones aged out. All three counts wrap `max by (namespace)` so a second kube-state-metrics replica cannot double-count a server. Instant query, not a range one — a stat tile means 'right now', and reducing a range keeps rendering a tile for any series that existed earlier in the window, which is how a phantom fourth server once appeared from pre-relabel data.",
+          "description": "Registered = dormant + reporting whenever the fleet is healthy. Any excess is servers that are supposed to be running and are not.",
           "options": {
             "reduceOptions": {
               "calcs": [
@@ -258,7 +258,7 @@ data:
             "x": 18,
             "y": 0
           },
-          "description": "Fleet total across every server. The per-server breakdown is the timeseries below. Shows the number alone — it sits in a row of per-server tiles, and with a name attached Grafana rendered it as a fourth server called \"Value\". Instant query, not a range one: a stat tile means 'right now', and reducing a range would keep rendering a tile for any series that existed earlier in the window — which is how a fourth `unlabelled` server appeared after the relabel, built from data older than the change.",
+          "description": "Fleet-wide player count right now. The per-server breakdown is the graph below.",
           "fieldConfig": {
             "defaults": {
               "thresholds": {
@@ -305,7 +305,7 @@ data:
             "x": 0,
             "y": 5
           },
-          "description": "History, not just a current count — shows joins and leaves over time, one line per server. `valheim_current_player_count` comes from huginn, which also emits its own `name` label; this uses `tafl_server` instead so the legend matches every other panel and drops the public Kubic prefix. An empty `tafl_server` is renamed to `unlabelled` rather than dropped: Grafana has no name for an empty label and falls back to calling the field \"Value\", but filtering the series out instead would hide an unmigrated instance, which is the one most worth seeing.",
+          "description": "Players per server over time, so joins and leaves are visible. An instance with no name label shows as `unlabelled` rather than being hidden.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -333,7 +333,7 @@ data:
             "x": 0,
             "y": 13
           },
-          "description": "One usage line per server, plus the per-instance request and limit as fleet-wide reference lines (every instance shares base's values, so plotting them per server would draw three identical lines). Usage comes from cAdvisor, which knows only the namespace, so the server name is joined back on from `up` — see the header comment.",
+          "description": "Usage per server, against the request and limit every instance shares. Usage comes from cAdvisor, so the server name is joined on from `up`.",
           "targets": [
             {
               "expr": "sum by (tafl_server) (rate(container_cpu_usage_seconds_total{container=\"valheim-server\"}[5m]) * on(namespace) group_left(tafl_server) topk by (namespace) (1, max by (namespace, tafl_server) (up{service=\"valheim-metrics\", tafl_server!=\"\"})))",
@@ -362,7 +362,7 @@ data:
             "x": 12,
             "y": 13
           },
-          "description": "Same shape as CPU: one line per server, request and limit as per-instance reference lines.",
+          "description": "Usage per server, against the request and limit every instance shares.",
           "fieldConfig": {
             "defaults": {
               "unit": "bytes"
@@ -396,7 +396,7 @@ data:
             "x": 0,
             "y": 21
           },
-          "description": "One tile per server. The backup-exporter reports -1 as its sentinel for 'no local backup exists yet' — the thresholds key green off 0 specifically so that sentinel reads as unhealthy (base/red) rather than accidentally healthy. An empty `tafl_server` is renamed to `unlabelled` rather than dropped: Grafana has no name for an empty label and falls back to calling the field \"Value\", but filtering the series out instead would hide an unmigrated instance, which is the one most worth seeing. Instant query, not a range one: a stat tile means 'right now', and reducing a range would keep rendering a tile for any series that existed earlier in the window — which is how a fourth `unlabelled` server appeared after the relabel, built from data older than the change.",
+          "description": "Age of each server's newest local backup. `-1` means none exist yet and reads red.",
           "options": {
             "reduceOptions": {
               "calcs": [
@@ -452,7 +452,7 @@ data:
             "x": 8,
             "y": 21
           },
-          "description": "The panel that matters most and is easiest to misread. It reports the age of the .last-upload marker, which backup-server.sh touches ONLY after a confirmed gsutil upload — so this is the one number that means 'a world left the cluster', as opposed to the panel on its left, which only means 'odin ran'. Same -1 'never' sentinel, same reason the thresholds key green off 0. Red here with green to the left is the specific state that looks fine and is not: local backups piling up on a PVC that dies with the cluster. An empty `tafl_server` is renamed to `unlabelled` rather than dropped: Grafana has no name for an empty label and falls back to calling the field \"Value\", but filtering the series out instead would hide an unmigrated instance, which is the one most worth seeing. Instant query, not a range one: a stat tile means 'right now', and reducing a range would keep rendering a tile for any series that existed earlier in the window — which is how a fourth `unlabelled` server appeared after the relabel, built from data older than the change.",
+          "description": "Age of each server's last confirmed upload to GCS \u2014 the number that means a world actually left the cluster. Red here beside green on the left is the state that looks fine and is not.",
           "options": {
             "reduceOptions": {
               "calcs": [
@@ -508,7 +508,7 @@ data:
             "x": 16,
             "y": 21
           },
-          "description": "Tarball count on each instance's backup PVC. odin prunes to AUTO_BACKUP_DAYS_TO_LIVE (1), so a count settling above ~24, or steadily climbing means pruning is not running and the PVC will eventually fill; a count stuck at 1 means each backup is replacing the last. An empty `tafl_server` is renamed to `unlabelled` rather than dropped: Grafana has no name for an empty label and falls back to calling the field \"Value\", but filtering the series out instead would hide an unmigrated instance, which is the one most worth seeing. Instant query, not a range one: a stat tile means 'right now', and reducing a range would keep rendering a tile for any series that existed earlier in the window — which is how a fourth `unlabelled` server appeared after the relabel, built from data older than the change.",
+          "description": "Tarball count on each server's backup PVC. A steadily climbing count means pruning has stopped.",
           "options": {
             "reduceOptions": {
               "calcs": [
@@ -536,7 +536,7 @@ data:
             "type": "loki",
             "uid": "${datasource}"
           },
-          "description": "Loki via the heimdall Datasource variable above (its exact provisioned name/uid wasn't pinned down, so this dashboard picks it by type instead of hardcoding a name). Now unfiltered across the fleet, so `showLabels` is on — the stream's k8s_namespace_name is what tells you which server a line came from, since the log text itself does not say. Target A (joins) logs the player's NAME; target B (leaves) logs their SteamID instead — the two identifiers are asymmetric, so don't expect the same string to show up in both directions for one player. The namespace regex has to match both `kubicvalheim` (valheim7 is grandfathered) and the `valheim-<slug>` convention everything since follows.",
+          "description": "Join and leave lines across the fleet, from Loki. Joins log a player name, leaves log a SteamID.",
           "gridPos": {
             "h": 10,
             "w": 24,
@@ -571,26 +571,6 @@ data:
                 "type": "loki",
                 "uid": "${datasource}"
               }
-            }
-          ]
-        },
-        {
-          "id": 11,
-          "title": "Usable node IPs",
-          "type": "table",
-          "gridPos": {
-            "h": 6,
-            "w": 24,
-            "x": 0,
-            "y": 36
-          },
-          "description": "Every node ExternalIP in the cluster — the answer to 'what do I repoint DNS at?' Kept on this dashboard even though the drift ALERT moved to tafl and the Heimdall Overview, because this is the remediation aid and a Valheim alert is what lands you here. Under externalTrafficPolicy: Cluster ANY of these serves the NodePorts, so every row is a valid choice; pick one and update BOTH the A record and tafl's kustomize/fleet/published-ip.yaml.",
-          "targets": [
-            {
-              "expr": "kube_node_status_addresses{type=\"ExternalIP\"}",
-              "refId": "A",
-              "instant": true,
-              "format": "table"
             }
           ]
         }
