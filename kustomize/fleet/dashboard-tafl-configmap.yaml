@@ -41,6 +41,12 @@ metadata:
 # which reads as broken scraping rather than as "no limit". If a limit is ever
 # removed from the Deployment, drop its series here in the same change.
 #
+# The Server status timeline has NO `perPage`, and that is deliberate. On the
+# state-timeline panel the presence of that key is what switches pagination on,
+# and Grafana then draws the pager unconditionally — including for a three-row
+# fleet that fits on one page, which just adds a control that does nothing. Set
+# it only once the row count genuinely overflows.
+#
 # Published-IP drift is NOT here any more. It was never a Valheim condition —
 # one A record serves every hosted game — so it moved to the tafl component
 # (kustomize/fleet/published-ip.yaml) and surfaces on the Heimdall Overview.
@@ -154,7 +160,6 @@ data:
             "showValue": "never",
             "alignValue": "center",
             "rowHeight": 0.9,
-            "perPage": 20,
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
