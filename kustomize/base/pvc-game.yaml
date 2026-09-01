@@ -1,7 +1,24 @@
+# This volume holds the SteamCMD-installed Valheim server, nothing authored here.
+# It exists so a pod roll does not re-download the install, not because the bytes
+# are precious — every one of them comes back from Steam.
+#
+# The label marks it as reconstructible so cluster backup skips it. Velero's
+# namespace filter is all-or-nothing, so without a per-volume signal, backing up
+# a Valheim world would also snapshot this install alongside it: ~1.76 GB per
+# instance, three instances, to protect a ~0.5 GB world that lives on
+# valheim-data. nordri's Velero schedule carries a VolumePolicy matching this
+# exact label with action `skip`.
+#
+# The label is deliberately generic rather than Valheim-specific — any volume
+# whose contents can be re-fetched from an upstream source (a game install, a
+# package cache, an unpacked image) should carry it. ARK's install volumes are
+# the next candidate.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: valheim-game
+  labels:
+    backup.siliconsaga.org/content: reconstructible
 spec:
   accessModes:
     - ReadWriteOnce
