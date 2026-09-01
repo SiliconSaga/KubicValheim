@@ -1,22 +1,27 @@
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
-# Opt-in observability: ServiceMonitor (scrapes Huginn /metrics) + Grafana dashboard.
-# Logs require NOTHING here — the cluster-wide OTel Collector DaemonSet (heimdall)
-# auto-collects pod stdout to Loki.
+# Opt-in per-instance observability: the ServiceMonitor that scrapes this
+# instance's Huginn /metrics. Logs require NOTHING here — the cluster-wide OTel
+# Collector DaemonSet (heimdall) auto-collects pod stdout to Loki.
 #
-# Alerts here are the ones true for EVERY instance. Backup alerting is conditional
-# on the overlay setting AUTO_BACKUP="1" and lives in components/observability-backups.
+# ONLY the ServiceMonitor lives here, and the reason is worth keeping. It is the
+# one piece that is genuinely per-instance: it selects the `valheim-metrics`
+# Service by label and carries no namespaceSelector, so it must sit in the same
+# namespace as the Service it scrapes.
 #
-# ONE Grafana dashboard: dashboard-tafl-configmap.yaml (uid tafl-valheim). The
-# per-instance predecessor (uid kubicvalheim) was retired once Tafl gained its
-# last two exclusive panels, because two dashboards over one workload is a
-# maintenance trap rather than a choice — the retired one had already drifted,
-# still asserting a node IP destroyed in the 2026-08-24 roll and therefore
-# showing a permanent red against a perfectly reachable server. It also
-# hardcoded namespace="kubicvalheim", so it could never show a second instance,
-# which is the direction this is going.
+# The Grafana dashboard and the alert rules moved to kustomize/fleet, which is
+# applied ONCE per cluster. They were never per-instance in anything but
+# deployment: the dashboard has a fixed uid, and PrometheusRule expressions are
+# not scoped to the namespace the rule object lives in — so N copies each
+# evaluated the whole fleet and a fix applied to one namespace was silently
+# defeated by the others. See kustomize/fleet/kustomization.yaml for the full
+# account.
+#
+# Backup alerting is conditional on the overlay setting AUTO_BACKUP="1" and
+# still lives in components/observability-backups. It has the same unscoped-
+# expression shape as the rules that moved, but moving it would also make it
+# unconditional, which would change behaviour for any instance that runs with
+# backups off — that trade wants its own decision rather than riding along here.
 resources:
   - servicemonitor.yaml
-  - dashboard-tafl-configmap.yaml
-  - prometheusrule.yaml

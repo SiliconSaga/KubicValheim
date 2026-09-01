@@ -1,0 +1,11 @@
+# Holds fleet-wide observability that must exist exactly once, rather than being
+# deployed alongside any single server. Deliberately not one of the instance
+# namespaces: putting the fleet dashboard in `kubicvalheim` would make the
+# flagship instance's namespace quietly special, and deleting that instance
+# would take the whole fleet's alerting with it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: valheim-fleet
+  labels:
+    app.kubernetes.io/part-of: kubicvalheim

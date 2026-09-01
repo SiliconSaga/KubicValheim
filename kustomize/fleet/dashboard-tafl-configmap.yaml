@@ -79,7 +79,7 @@ data:
             "x": 0,
             "y": 0
           },
-          "description": "State per server across the window, one row each. Four states, because 'off on purpose' and 'broken' are different facts and colouring both red trains you to ignore the panel: BLUE dormant (spec replicas 0 — a human parked it), GREEN online, YELLOW scrapeable but not accepting players (valheim_online 0 — the cautionary middle), RED wanted but not running. A timeline rather than the stat tiles this began as: tiles grow sideways until none are legible, a timeline grows downward, and it shows whether a server was solidly up or flapping. KEYED ON NAMESPACE, NOT `tafl_server`, and that is the whole trick — `tafl_server` is a target label copied from the Service, so it exists only while something is being scraped, and a dormant server would vanish from this panel entirely rather than show blue. kube-state-metrics keeps reporting the Deployment whatever state it is in, so the state expression is built from `kube_deployment_spec_replicas` and only consults scrape-derived series for the live states. The display name is derived from the namespace by label_replace; real `tafl_server` names would need that label added to kube-state-metrics' --metric-labels-allowlist in heimdall, which is the productionisation step. Resource and player-count panels below still lose a dormant server, which is correct — there is genuinely nothing to plot.",
+          "description": "State per server across the window, one row each. Four states, because 'off on purpose' and 'broken' are different facts and colouring both red trains you to ignore the panel: BLUE dormant (spec replicas 0 — a human parked it), GREEN online, YELLOW scrapeable but not accepting players (valheim_online 0 — the cautionary middle), RED wanted but not running. A timeline rather than the stat tiles this began as: tiles grow sideways until none are legible, a timeline grows downward, and it shows whether a server was solidly up or flapping. KEYED ON NAMESPACE, NOT `tafl_server`, and that is the whole trick — `tafl_server` is a target label copied from the Service, so it exists only while something is being scraped, and a dormant server would vanish from this panel entirely rather than show blue. kube-state-metrics keeps reporting the Deployment whatever state it is in, so the state expression is built from `kube_deployment_spec_replicas` and only consults scrape-derived series for the live states. The display name is derived from the namespace by label_replace; real `tafl_server` names would need that label added to kube-state-metrics' --metric-labels-allowlist in heimdall, which is the productionisation step. Resource and player-count panels below still lose a dormant server, which is correct — there is genuinely nothing to plot. THE THRESHOLD STEPS AND THE VALUE MAPPINGS MUST AGREE, and both are required: on a state-timeline the threshold colour wins, so the mappings supply only the text. A single base step painted all four states the same colour and every server read DORMANT-blue regardless of what it was actually doing — a fleet that looks deliberately parked while it is in fact running. If a state is ever added, add it in both places.",
           "targets": [
             {
               "refId": "A",
@@ -103,6 +103,18 @@ data:
                   {
                     "color": "blue",
                     "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 2
+                  },
+                  {
+                    "color": "red",
+                    "value": 3
                   }
                 ]
               },
@@ -164,7 +176,7 @@ data:
             "x": 12,
             "y": 0
           },
-          "description": "The counterpart to the timeline, and the reason this dashboard does not rely on `up` alone. Scale an instance to zero and its `up` series stops EXISTING rather than reporting 0, so it silently leaves every scrape-derived panel — while kube-state-metrics keeps reporting the Deployment whatever state it is in. Read it as one invariant: REGISTERED = DORMANT + REPORTING. When that holds, every server is either deliberately parked or healthy, and there is nothing to do. When registered exceeds dormant + reporting, the difference is servers that are supposed to be running and are not — the one number worth acting on. Splitting 'dormant' out of what used to be a bare registered-vs-reporting gap is what makes a parked server readable as intent rather than as a shortfall. `reporting` counts NAMESPACES rather than `up` series: during a relabel a target briefly has both an old and a new series, which counted 5 of 3 servers until the stale ones aged out. Instant query, not a range one — a stat tile means 'right now', and reducing a range keeps rendering a tile for any series that existed earlier in the window, which is how a phantom fourth server once appeared from pre-relabel data.",
+          "description": "The counterpart to the timeline, and the reason this dashboard does not rely on `up` alone. Scale an instance to zero and its `up` series stops EXISTING rather than reporting 0, so it silently leaves every scrape-derived panel — while kube-state-metrics keeps reporting the Deployment whatever state it is in. Read it as one invariant: REGISTERED = DORMANT + REPORTING. When that holds, every server is either deliberately parked or healthy, and there is nothing to do. When registered exceeds dormant + reporting, the difference is servers that are supposed to be running and are not — the one number worth acting on. Splitting 'dormant' out of what used to be a bare registered-vs-reporting gap is what makes a parked server readable as intent rather than as a shortfall. `reporting` is JOINED against `spec_replicas > 0`, and that join is what keeps the invariant true during a transition rather than only at rest. The two inputs move at different speeds: kube-state-metrics reports `spec_replicas = 0` as soon as it scrapes the changed Deployment, while `up` keeps its last healthy sample until service discovery drops the target and staleness processing runs. Observed live while scaling an instance down — the unjoined form read `registered 3, dormant 1, reporting 3`, four servers' worth of state for three servers, while the joined form read `reporting 2` and balanced. `reporting` also counts NAMESPACES rather than `up` series: during a relabel a target briefly has both an old and a new series, which counted 5 of 3 servers until the stale ones aged out. All three counts wrap `max by (namespace)` so a second kube-state-metrics replica cannot double-count a server. Instant query, not a range one — a stat tile means 'right now', and reducing a range keeps rendering a tile for any series that existed earlier in the window, which is how a phantom fourth server once appeared from pre-relabel data.",
           "options": {
             "reduceOptions": {
               "calcs": [
@@ -217,19 +229,19 @@ data:
           },
           "targets": [
             {
-              "expr": "count(kube_deployment_spec_replicas{deployment=\"valheim\"}) or vector(0)",
+              "expr": "count(max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"})) or vector(0)",
               "refId": "A",
               "legendFormat": "registered",
               "instant": true
             },
             {
-              "expr": "count(kube_deployment_spec_replicas{deployment=\"valheim\"} == 0) or vector(0)",
+              "expr": "count(max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"}) == 0) or vector(0)",
               "refId": "B",
               "legendFormat": "dormant",
               "instant": true
             },
             {
-              "expr": "count(max by (namespace) (up{service=\"valheim-metrics\", endpoint=\"huginn\"}) == 1) or vector(0)",
+              "expr": "count((max by (namespace) (up{service=\"valheim-metrics\", endpoint=\"huginn\"}) == 1) and on (namespace) (max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"}) > 0)) or vector(0)",
               "refId": "C",
               "legendFormat": "reporting",
               "instant": true
