@@ -29,7 +29,7 @@ A busybox sidecar exposes four gauges on `/metrics.txt`. Only the two age metric
 | `valheim_backup_count` | how many local tarballs are retained |
 | `valheim_backup_bytes` | size of the newest local tarball |
 
-Alerts route to the phone through heimdall's existing `watched: "true"` route.
+Only **`ValheimBackupMissing`** pages the phone, through heimdall's `watched: "true"` route — no backups existing at all is a standing data-loss exposure on a world people are building in. `ValheimBackupStale`, `ValheimBackupNotUploaded` and `ValheimBackupExporterDown` deliberately route to `heimdall-info` instead: each is a backup *plumbing* fault with a healthy world and a running game, and routing every one of them to the paging tier is how the tier stops meaning anything.
 
 The backup alerts live in the opt-in `components/observability-backups`, separately from the main observability component, because they assume `AUTO_BACKUP=1` — enabling them against an instance with backups off would page about a condition that is deliberate.
 

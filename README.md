@@ -15,7 +15,7 @@ The Valheim dedicated server is **x86_64-only** — there is no ARM build, and t
 | Understand the three flavors | [`docs/flavors.md`](docs/flavors.md) |
 | Add another server instance | [`docs/instances.md`](docs/instances.md) |
 | Let players in | [`docs/networking.md`](docs/networking.md) |
-| Recover a world | [`docs/world-identity.md`](docs/world-identity.md) — read before `restore.md` |
+| Recover a world | [`docs/world-identity.md`](docs/world-identity.md) — read before [`docs/restore.md`](docs/restore.md) |
 
 Full documentation index: [`docs/README.md`](docs/README.md).
 
@@ -25,8 +25,9 @@ Full documentation index: [`docs/README.md`](docs/README.md).
 docker/                      # Flavor 1: docker-compose + env + README
 kustomize/
   base/                      # the shared core (one source of truth)
-  fleet/                     # applied once per cluster: dashboard + alert rules
-  components/                # additive per-instance extras: observability, secrets-openbao, backup
+  fleet/                     # applied once per cluster: dashboard + fleet-wide alert rules
+  components/                # per-instance extras: observability, observability-backups,
+                             #   secrets-openbao, backup — including the per-instance backup alerts
   overlays/                  # per-flavor and per-instance compositions
 scripts/                     # instance renderer, backup, restore, archive inspector
 docs/                        # documentation index and topics
