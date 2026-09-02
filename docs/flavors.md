@@ -32,12 +32,26 @@ Observability comes with it: metrics scrape into heimdall's Prometheus and Grafa
 
 ## Components
 
+Components are per-instance: every overlay that includes one gets its own copy of what it adds.
+
 | Component | Adds | Opt-in |
 |---|---|---|
-| `observability` | ServiceMonitor + Grafana dashboard | yes |
+| `observability` | ServiceMonitor scraping this instance's Huginn endpoint | yes |
 | `observability-backups` | backup alert rules — separate because they assume `AUTO_BACKUP=1` | yes |
 | `secrets-openbao` | ExternalSecret for `valheim-secrets` | yes |
 | `backup` | inert S3 seam, reserved for the Phase-3 CronJob | yes |
+
+## Fleet resources
+
+`kustomize/fleet/` holds what must exist **exactly once per cluster** rather than once per server: the Grafana dashboard and the `ValheimDown` / `ValheimNotOnline` alert rules. It is applied on its own, and no instance overlay pulls it in:
+
+```bash
+kubectl apply -k kustomize/fleet
+```
+
+Neither is per-instance despite looking like it. The dashboard has a fixed `uid`, so multiple copies would be several provisioning sources for one dashboard. The alert expressions match on `deployment="valheim"` across the whole cluster, so each copy would evaluate the entire fleet — and `max by (namespace)` already makes one rule emit one alert per affected server, so a single deployment loses nothing.
+
+A new cluster needs this applied explicitly; creating instances alone will not produce a dashboard or any alerting.
 
 ## Repository layout
 
@@ -45,8 +59,9 @@ Observability comes with it: metrics scrape into heimdall's Prometheus and Grafa
 docker/                      # Flavor 1: docker-compose + .env.example + README
 kustomize/
   base/                      # the shared core (one source of truth)
+  fleet/                     # applied ONCE per cluster: dashboard + alert rules
   components/
-    observability/           # ServiceMonitor + Grafana dashboard
+    observability/           # ServiceMonitor (per instance)
     observability-backups/   # backup alert rules (assume AUTO_BACKUP=1)
     secrets-openbao/         # ExternalSecret for valheim-secrets
     backup/                  # inert S3 seam scaffold (Phase 3)

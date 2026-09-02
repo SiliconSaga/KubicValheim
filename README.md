@@ -25,7 +25,8 @@ Full documentation index: [`docs/README.md`](docs/README.md).
 docker/                      # Flavor 1: docker-compose + env + README
 kustomize/
   base/                      # the shared core (one source of truth)
-  components/                # additive extras: observability, secrets-openbao, backup
+  fleet/                     # applied once per cluster: dashboard + alert rules
+  components/                # additive per-instance extras: observability, secrets-openbao, backup
   overlays/                  # per-flavor and per-instance compositions
 scripts/                     # instance renderer, backup, restore, archive inspector
 docs/                        # documentation index and topics
