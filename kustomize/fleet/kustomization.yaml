@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Applied ONCE per cluster — NOT once per instance. Mirrors tafl's kustomize/fleet.
+#
+#   ws k8s apply -k components/kubicvalheim/kustomize/fleet
+#
+# WHY THIS DIRECTORY EXISTS. Both resources below were previously part of
+# components/observability, which every instance overlay includes — so a
+# three-instance fleet deployed three copies of each. That is not merely
+# redundant, it is wrong in two distinct ways:
+#
+#   * The dashboard has a fixed `uid: tafl-valheim`. Three ConfigMaps carrying
+#     the same uid means three files for Grafana to provision from and no
+#     defined winner.
+#
+#   * A PrometheusRule is a namespaced OBJECT, but its expressions are not
+#     namespaced QUERIES. `kube_deployment_status_replicas_available{deployment="valheim"}`
+#     matches the whole cluster, so every copy evaluated the entire fleet and
+#     the `namespace` label on the resulting alert came from the matched metric
+#     rather than from the rule's own namespace.
+#
+# The second one bites hard and quietly: a fix applied to ONE namespace is
+# defeated by the untouched copies. Found live — after adding the dormancy guard
+# to valheim-twinhenge alone, Prometheus reported that rule `inactive` while the
+# kubicvalheim and valheim3 copies stayed `firing`, both firing ABOUT twinhenge.
+# The alert only cleared once all three were updated. The symptom is a correct
+# fix that appears not to work, which is a bad way to spend an afternoon.
+#
+# `max by (namespace)` in the rules is what makes one fleet-level rule still
+# produce one alert per affected server, so nothing is lost by deploying once.
+#
+# WHAT STAYS PER-INSTANCE: components/observability keeps the ServiceMonitor,
+# which genuinely belongs in each instance's namespace because it selects that
+# namespace's Service and carries no namespaceSelector.
+namespace: valheim-fleet
+
+resources:
+  - namespace.yaml
+  - dashboard-tafl-configmap.yaml
+  - prometheusrule.yaml
