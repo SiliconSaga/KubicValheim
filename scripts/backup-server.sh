@@ -106,6 +106,9 @@ max_age_seconds=10800   # 3h
 # every other non-zero status to 1. The trap also does the workspace cleanup
 # that used to be installed further down.
 dormant=0
+# EXIT trap: remove the workspace copy if one was made, then collapse the exit
+# status to the contract Jenkins reads — 0 success, 2 only when `dormant` was set
+# deliberately, 1 for everything else.
 finish() {
   rc=$?
   if [ -n "${local_file:-}" ]; then rm -f "$local_file"; fi
@@ -154,8 +157,19 @@ if [ -z "$pod" ]; then
   # can park the instance between the two calls, and a nightly job that happens
   # to land in that window would otherwise go red for a server someone had just
   # deliberately switched off — the exact false alarm this change removes.
-  spec_now="$(kctl get deployment valheim -n "$ns" --ignore-not-found -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "$spec_replicas")"
-  if [ "${spec_now:-$spec_replicas}" -eq 0 ]; then
+  # Status kept, same as the two lookups above — an earlier revision of this line
+  # fell back to the previous count on failure, which would have reported a
+  # missing pod when the API call itself was what broke.
+  if ! spec_now="$(kctl get deployment valheim -n "$ns" --ignore-not-found -o jsonpath='{.spec.replicas}' 2>&1)"; then
+    echo "ERROR: could not re-query deployment/valheim in ${ns} — the API call failed:" >&2
+    echo "  ${spec_now}" >&2
+    exit 1
+  fi
+  if [ -z "$spec_now" ]; then
+    echo "ERROR: deployment/valheim disappeared from ${ns} during this run." >&2
+    exit 1
+  fi
+  if [ "$spec_now" -eq 0 ]; then
     dormant=1
     echo "DORMANT: deployment/valheim in ${ns} was scaled to 0 while this run was starting."
     echo "  Skipping backup; nothing was missed."
