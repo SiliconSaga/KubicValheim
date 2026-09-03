@@ -53,8 +53,20 @@ cannot run after the scale-down:
 2. Run the Jenkins backup job **while the server is still up**.
 3. Confirm the upload succeeded.
 4. Scale to 0. `AUTO_BACKUP_ON_SHUTDOWN=1` writes one final local tarball to the
-   backups PVC as it stops — that one cannot be uploaded (no pod to copy it
-   from), but Velero's daily snapshot of that PVC covers it.
+   backups PVC as it stops.
+
+**That final tarball is not protected immediately.** It cannot be uploaded —
+there is no pod left to copy it from — so it waits for the *next* Velero
+snapshot of the `valheim-backups` PVC, which is external to this repo and runs
+daily. Depending on when you park the server that is **up to ~24 hours** during
+which the shutdown archive exists only on the PVC.
+
+That is usually an acceptable gap rather than a real exposure, because the
+shutdown tarball is a *duplicate* of a world that is already covered: the
+`valheim-data` PVC is snapshotted on the same schedule, and step 2 above put a
+copy in GCS. It matters only if you are relying on that last archive
+specifically — in which case wait for the next snapshot before deleting
+anything.
 
 **Waking a server:** the first backup run after wake-up can legitimately fail the
 3-hour staleness guard, because the newest tarball on the PVC is from whenever it

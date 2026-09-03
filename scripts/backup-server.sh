@@ -95,12 +95,42 @@ max_age_seconds=10800   # 3h
 #
 # Checked BEFORE the pod lookup, because a dormant instance has no pod and would
 # otherwise fail on the generic "no pod" path with a misleading message.
-spec_replicas="$(kctl get deployment valheim -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+# Exit 2 must mean DORMANT and nothing else, because backup.Jenkinsfile turns it
+# into a yellow build. Everything below can produce a 2 by accident: `kubectl
+# exec` propagates the REMOTE command's exit status, and gcloud/gsutil use 2 for
+# usage errors. Under `set -e` that status becomes the script's, so a failed
+# upload would be reported as UNSTABLE — the "looks fine, shipped nothing"
+# outcome the staleness and `tar -tzf` guards exist to prevent.
+#
+# So: only a deliberate dormancy exit sets the flag, and the trap normalizes
+# every other non-zero status to 1. The trap also does the workspace cleanup
+# that used to be installed further down.
+dormant=0
+finish() {
+  rc=$?
+  if [ -n "${local_file:-}" ]; then rm -f "$local_file"; fi
+  if [ "$rc" -eq 0 ]; then exit 0; fi
+  if [ "$dormant" -eq 1 ]; then exit 2; fi
+  exit 1
+}
+trap finish EXIT
+
+# `--ignore-not-found` so a missing Deployment is exit 0 with empty output, which
+# separates "it is not there" from "the query itself failed". Without it, both
+# arrive as a non-zero status and an auth, RBAC or network fault gets reported as
+# "the instance is gone" — sending someone to look for a deleted server that is
+# actually running fine behind a broken credential.
+if ! spec_replicas="$(kctl get deployment valheim -n "$ns" --ignore-not-found -o jsonpath='{.spec.replicas}' 2>&1)"; then
+  echo "ERROR: could not query deployment/valheim in ${ns} — the API call failed:" >&2
+  echo "  ${spec_replicas}" >&2
+  exit 1
+fi
 if [ -z "$spec_replicas" ]; then
   echo "ERROR: no deployment/valheim in namespace ${ns} — wrong namespace, or the instance is gone." >&2
   exit 1
 fi
 if [ "$spec_replicas" -eq 0 ]; then
+  dormant=1
   echo "DORMANT: deployment/valheim in ${ns} is scaled to 0 replicas (spec.replicas=0)."
   echo "  Skipping backup: there is no running server to produce or serve a tarball,"
   echo "  and the world on the PVC is unchanged since it was parked."
@@ -110,11 +140,28 @@ if [ "$spec_replicas" -eq 0 ]; then
 fi
 echo "Instance is active (spec.replicas=${spec_replicas})"
 
-pod="$(kctl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+# `{range}` rather than `{.items[0]...}`: an empty item list is a normal result
+# for a label selector, and indexing [0] into it errors on some kubectl versions
+# — which would be indistinguishable from a real query failure here.
+if ! pods="$(kctl get pod -n "$ns" -l app=valheim -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>&1)"; then
+  echo "ERROR: could not query pods in ${ns} — the API call failed:" >&2
+  echo "  ${pods}" >&2
+  exit 1
+fi
+pod="${pods%% *}"
 if [ -z "$pod" ]; then
-  # Reachable only with spec >= 1, so this is a genuine problem: the instance is
-  # supposed to be running and is not. Dormancy was already handled above.
-  echo "ERROR: no pod with label app=valheim in namespace ${ns}, but spec.replicas=${spec_replicas}." >&2
+  # Re-read spec.replicas rather than trusting the value from above. An operator
+  # can park the instance between the two calls, and a nightly job that happens
+  # to land in that window would otherwise go red for a server someone had just
+  # deliberately switched off — the exact false alarm this change removes.
+  spec_now="$(kctl get deployment valheim -n "$ns" --ignore-not-found -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "$spec_replicas")"
+  if [ "${spec_now:-$spec_replicas}" -eq 0 ]; then
+    dormant=1
+    echo "DORMANT: deployment/valheim in ${ns} was scaled to 0 while this run was starting."
+    echo "  Skipping backup; nothing was missed."
+    exit 2
+  fi
+  echo "ERROR: no pod with label app=valheim in namespace ${ns}, but spec.replicas=${spec_now}." >&2
   echo "  The instance is supposed to be running — check the Deployment and node capacity." >&2
   exit 1
 fi
@@ -140,10 +187,11 @@ echo "Backup age ${age}s — within limit"
 
 ts="$(date +%Y%m%d-%H%M%S)"
 local_file="${slug}-${ts}.tar.gz"
-# Remove the copied archive from the Jenkins workspace after the upload attempt,
-# regardless of outcome — a trap covers both the success and failure paths (and
-# any early exit) without changing exit status or the semantics below.
-trap 'rm -f "$local_file"' EXIT
+# Workspace cleanup is handled by the `finish` EXIT trap installed above — it
+# covers success, failure and any early exit, and reads local_file at trap time
+# so it is safe that the variable is only set here. A second `trap ... EXIT` at
+# this point would REPLACE that one, silently dropping the exit-status
+# normalization along with it.
 kctl cp -n "$ns" -c valheim-server "${pod}:${newest}" "$local_file"
 
 if [ ! -s "$local_file" ]; then
