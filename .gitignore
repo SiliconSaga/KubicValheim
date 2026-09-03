@@ -1,6 +1,6 @@
 /.idea
 
-# Generated per-instance overlays from scripts/start-server.sh — keep only the
+# Generated per-instance overlays from scripts/create-server.sh — keep only the
 # curated examples (plain, gitops, valheim7). Ad-hoc instances aren't committed by accident.
 kustomize/overlays/*/
 !kustomize/overlays/plain/

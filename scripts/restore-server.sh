@@ -83,7 +83,7 @@ fi
 
 # <world> only ever flows into literal grep -F patterns and log/echo text below
 # — never into a path or command substitution — so it needs no shell-safety
-# validation. This is the same printable-name allowlist start-server.sh enforces
+# validation. This is the same printable-name allowlist create-server.sh enforces
 # when it WRITES a world name; it just catches a typo'd/empty value early with a
 # clear error instead of a confusing miss deep in step 4's grep.
 world_re='^[A-Za-z0-9 _-]+$'
@@ -335,7 +335,7 @@ sed 's#^\./##' "$listing_raw" > "$listing_norm"
 #     <World>_backup_20260206-235715         (manual / version upgrade)
 # Matching only the first made a real legacy archive report three worlds where it
 # held one; matching a bare `_backup_` substring would instead hide a world
-# someone legitimately called `World_backup_legacy`, which start-server.sh's
+# someone legitimately called `World_backup_legacy`, which create-server.sh's
 # allowlist permits. Anchoring on trailing digits catches exactly the copies.
 archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
   | awk '!(/_backup_auto-[0-9]+$/ || /_backup_[0-9]+-[0-9]+$/)' | sort -u | tr '\n' ' ')"
