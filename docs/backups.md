@@ -46,14 +46,33 @@ The three obvious alternatives are each worse:
 UNSTABLE is the honest answer: nothing was backed up, nothing needed to be, and
 the job is still armed for when the server comes back.
 
-**Parking a server — order matters.** The upload path needs a running pod, so it
-cannot run after the scale-down:
+**Hibernating a server — use the job.** `scripts/hibernate-server.sh`, and the
+per-instance **Hibernate server** Jenkins job that wraps it, exist precisely
+because the ordering is not the intuitive one. The upload path needs a running
+pod, so it cannot run after the scale-down. The script does, in order:
 
-1. Confirm nobody is connected.
-2. Run the Jenkins backup job **while the server is still up**.
-3. Confirm the upload succeeded.
-4. Scale to 0. `AUTO_BACKUP_ON_SHUTDOWN=1` writes one final local tarball to the
+1. Refuse if already hibernated (exit 2 → UNSTABLE).
+2. Warn if the server log still shows connections.
+3. Ask odin for a **fresh** archive — see below.
+4. Run `backup-server.sh`, which applies the staleness and `tar -tzf` guards and
+   refreshes the upload marker. **If this fails, it does not scale down.**
+5. Scale to 0. `AUTO_BACKUP_ON_SHUTDOWN=1` writes one final local tarball to the
    backups PVC as it stops.
+
+`SKIP_BACKUP=1` (the `skipBackup` job parameter) scales down without step 3 or 4,
+for urgent shutdowns. It does not change the resulting state — a server stopped
+in a hurry and one hibernated properly are both `spec.replicas: 0` and
+indistinguishable afterwards. The difference is only whether a fresh archive
+reached GCS, which is why the default takes one.
+
+**Why a fresh archive rather than the newest hourly.** Without step 3,
+wake-then-hibernate deadlocks: the staleness guard rejects anything older than
+3h, and immediately after a wake the newest tarball on the PVC is the *shutdown*
+archive from the previous hibernation, already hours old. Observed exactly that —
+`newest backup is 10878s old (limit 10800s)` — leaving only "wait for odin's next
+hourly" or "skip the backup" as ways forward, neither of which is a reasonable
+answer to *put this server to sleep*. A hibernation backup should also simply
+capture the world as it is **now**, not up to an hour ago.
 
 **That final tarball is not protected immediately.** It cannot be uploaded —
 there is no pod left to copy it from — so it waits for the *next* Velero
@@ -68,9 +87,17 @@ copy in GCS. It matters only if you are relying on that last archive
 specifically — in which case wait for the next snapshot before deleting
 anything.
 
-**Waking a server:** the first backup run after wake-up can legitimately fail the
-3-hour staleness guard, because the newest tarball on the PVC is from whenever it
-was parked. Let odin produce a fresh hourly archive before re-running the job.
+**Waking a server:** use `scripts/wake-server.sh` or the **Wake server** job. It
+scales up, waits for Ready, and then **verifies a world actually came back** — a
+server that starts with an empty world is indistinguishable from a healthy one
+from the outside, which is the same reasoning [restore.md](restore.md) applies to
+restores. It fails loudly if `worlds_local` is empty, because the next thing that
+happens otherwise is players connecting to a freshly generated map.
+
+The first *scheduled* backup after a wake can still legitimately fail the 3-hour
+staleness guard, since the newest tarball dates from the hibernation. Let odin
+write a fresh hourly archive, or just hibernate again — that path takes its own
+fresh archive and is unaffected.
 
 ## Metrics and alerts
 

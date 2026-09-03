@@ -69,7 +69,11 @@ kustomize/
     plain/                   # Flavor 2: base + plain Secret (example "midgard")
     gitops/                  # Flavor 3: base + observability + secrets-openbao
     <instance>/              # per-instance overlays, generated
-scripts/start-server.sh      # data-driven per-instance overlay renderer
+scripts/create-server.sh      # data-driven per-instance overlay renderer (CREATE, not start)
+scripts/wake-server.sh        # scale up + verify the world came back
+scripts/hibernate-server.sh   # fresh backup + upload, then scale to 0
+scripts/backup-server.sh      # upload the newest archive to GCS
+scripts/restore-server.sh     # DESTRUCTIVE world replacement
 ```
 
 ## Details worth knowing

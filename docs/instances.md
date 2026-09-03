@@ -3,11 +3,28 @@
 Instances are **data-driven**: one namespace per instance, rendered from the shared base. There is no copy-paste step, and no per-instance fork of the manifests.
 
 ```bash
-scripts/start-server.sh asgard 32556 Asgard           # render kustomize/overlays/asgard (ns valheim-asgard)
-APPLY=1 scripts/start-server.sh asgard 32556 Asgard   # render and apply
+scripts/create-server.sh asgard 32556 Asgard           # render kustomize/overlays/asgard (ns valheim-asgard)
+APPLY=1 scripts/create-server.sh asgard 32556 Asgard   # render and apply
 ```
 
 The three arguments are the instance slug, its game NodePort, and the world name. The query port is the game port plus one, so `32556` game implies `32557` query — allow both through the firewall.
+
+> **`create-server.sh` CREATES an instance — it does not start one.** It was called `start-server.sh`, which invited exactly the wrong use: reaching for it to bring a hibernated server back up. It regenerates `kustomize/overlays/<name>/` from defaults, so running it against a curated instance would discard that instance's guarded nodePorts and backup patches. It now refuses when the overlay already exists (`OVERWRITE=1` to override deliberately).
+
+## Lifecycle
+
+Four verbs, each with a script and a per-instance Jenkins job:
+
+| Verb | Script | What it does |
+|---|---|---|
+| create | `create-server.sh` | renders a **new** instance overlay |
+| wake | `wake-server.sh` | scales to 1, waits, **verifies the world came back** |
+| hibernate | `hibernate-server.sh` | fresh backup → upload → scale to 0 |
+| restore | `restore-server.sh` | **destructive**; replaces the world from an archive |
+
+Hibernate and wake are the two halves of one transition, and **both are `spec.replicas`**. That value is the dormancy signal the whole system agrees on: `ValheimDown` suppresses on it, and the backup job reports UNSTABLE rather than failing on it. See [backups.md](backups.md).
+
+Neither job is on a cron. Putting a server to sleep, or waking it, is a deliberate act — the same reasoning that keeps restore manual-only.
 
 ## Choosing a port
 
