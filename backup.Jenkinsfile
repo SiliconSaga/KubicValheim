@@ -24,7 +24,30 @@ pipeline {
                     withKubeConfig(credentialsId: 'utility-admin-kubeconfig-sa-token') {
                         withCredentials([file(credentialsId: 'jenkins-bucket-sa', variable: 'GCLOUD_KEY')]) {
                             sh 'cat "$GCLOUD_KEY" | gcloud auth activate-service-account --key-file=-'
-                            sh './scripts/backup-server.sh "$slug" "$namespace"'
+                            // returnStatus, not the default throw-on-nonzero, so exit 2
+                            // can be told apart from a real failure. Console output still
+                            // streams either way.
+                            //
+                            // A dormant instance (spec.replicas == 0) is neither success
+                            // nor failure: no backup was taken, and none was needed. Red
+                            // every night for a server someone deliberately parked is how
+                            // an operator learns to ignore this job — and with it the next
+                            // genuine failure. Green would be worse still: it would report
+                            // a backup that did not happen.
+                            //
+                            // Exit codes are the contract in scripts/backup-server.sh;
+                            // change them together.
+                            script {
+                                def rc = sh(
+                                    script: './scripts/backup-server.sh "$slug" "$namespace"',
+                                    returnStatus: true
+                                )
+                                if (rc == 2) {
+                                    unstable("Instance '${env.slug}' is dormant (spec.replicas == 0) — no backup taken, none needed.")
+                                } else if (rc != 0) {
+                                    error("backup-server.sh failed for '${env.slug}' (exit ${rc})")
+                                }
+                            }
                         }
                     }
                 }
