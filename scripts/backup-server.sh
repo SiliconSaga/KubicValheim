@@ -10,6 +10,12 @@
 #                 the agent), but strongly recommended anywhere a workstation is
 #                 involved — see the context note below.
 #
+# Exit codes (backup.Jenkinsfile depends on these — keep them in sync):
+#   0  backup uploaded
+#   2  instance is DORMANT (spec.replicas == 0); nothing to do, and that is
+#      correct. Jenkins maps this to UNSTABLE, not FAILURE.
+#   1  anything actually wrong
+#
 # odin (AUTO_BACKUP) already produced a consistent archive hourly, so unlike the
 # KubicArk equivalent this does NOT exec a tar over a live world.
 set -euo pipefail
@@ -62,9 +68,54 @@ bucket="gs://kubic-game-hosting/valheim"
 # failure this design exists to avoid.
 max_age_seconds=10800   # 3h
 
+# --- Dormancy: an instance that is deliberately OFF is not a failure ---------
+#
+# Exit 2 means "nothing to back up, and that is correct" — distinct from exit 1,
+# which always means something is wrong. backup.Jenkinsfile maps 2 to UNSTABLE so
+# a parked server shows yellow rather than red.
+#
+# Three outcomes were all worse than a third state:
+#   - FAILURE: a nightly red build for a server nobody asked to be running. Red
+#     that is expected is red that gets ignored, and the next REAL failure with
+#     it.
+#   - SUCCESS: reports a backup happened when none did. That is the silent
+#     failure this whole script is built to refuse.
+#   - Disabling the job: the schedule then has to be remembered and re-armed by
+#     hand at wake-up, which is exactly the step that gets forgotten.
+#
+# The intent signal is `spec.replicas`, the SAME marker the ValheimDown alert
+# uses for this purpose (kustomize/fleet/prometheusrule.yaml — the trailing
+# `unless ... kube_deployment_spec_replicas == 0`). Deliberately the same one:
+# an operator scaling a server down should not have to know that backups and
+# alerting disagree about what "off" means.
+#
+#   spec == 0                -> dormant, on purpose        -> exit 2 (UNSTABLE)
+#   spec >= 1 but no pod     -> it fell over               -> exit 1 (FAILURE)
+#   deployment missing       -> wrong ns, or it is gone    -> exit 1 (FAILURE)
+#
+# Checked BEFORE the pod lookup, because a dormant instance has no pod and would
+# otherwise fail on the generic "no pod" path with a misleading message.
+spec_replicas="$(kctl get deployment valheim -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+if [ -z "$spec_replicas" ]; then
+  echo "ERROR: no deployment/valheim in namespace ${ns} — wrong namespace, or the instance is gone." >&2
+  exit 1
+fi
+if [ "$spec_replicas" -eq 0 ]; then
+  echo "DORMANT: deployment/valheim in ${ns} is scaled to 0 replicas (spec.replicas=0)."
+  echo "  Skipping backup: there is no running server to produce or serve a tarball,"
+  echo "  and the world on the PVC is unchanged since it was parked."
+  echo "  The last upload in ${bucket}/${slug}/ remains the current off-cluster copy."
+  echo "  Scale the instance back up to resume scheduled backups."
+  exit 2
+fi
+echo "Instance is active (spec.replicas=${spec_replicas})"
+
 pod="$(kctl get pod -n "$ns" -l app=valheim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 if [ -z "$pod" ]; then
-  echo "ERROR: no pod with label app=valheim in namespace ${ns}" >&2
+  # Reachable only with spec >= 1, so this is a genuine problem: the instance is
+  # supposed to be running and is not. Dormancy was already handled above.
+  echo "ERROR: no pod with label app=valheim in namespace ${ns}, but spec.replicas=${spec_replicas}." >&2
+  echo "  The instance is supposed to be running — check the Deployment and node capacity." >&2
   exit 1
 fi
 echo "Found pod ${pod} in ${ns}"

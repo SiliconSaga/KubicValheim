@@ -18,6 +18,48 @@ A nightly Jenkins job ships the newest archive to `gs://kubic-game-hosting/valhe
 
 **Jenkins cron is UTC.** A `cron('30 3 * * *')` spec fires at 03:30 UTC, which is the *previous* evening in Eastern — 23:30 EDT in summer, 22:30 EST in winter — not overnight local. Archive names from Jenkins runs are stamped UTC accordingly, while a hand-run from a workstation stamps local time.
 
+## Dormant instances
+
+An instance scaled to zero has no pod, so there is nothing to produce a tarball
+and nothing to copy one from. The nightly job still runs — and reports
+**UNSTABLE**, not failure.
+
+`backup-server.sh` checks `spec.replicas` before looking for a pod and exits **2**
+when it is zero; `backup.Jenkinsfile` maps that one code to `unstable()`. Exit 1
+still means something is genuinely wrong, including `spec >= 1` with no pod,
+which is a server that fell over rather than one that was parked.
+
+**This is the same intent signal the `ValheimDown` alert uses** to stay quiet for a
+parked server (the trailing `unless … kube_deployment_spec_replicas == 0` in
+`kustomize/fleet/prometheusrule.yaml`). Deliberately the same one: an operator
+scaling a server down should not have to know that alerting and backups disagree
+about what "off" means.
+
+The three obvious alternatives are each worse:
+
+| Option | Why not |
+|---|---|
+| Fail | A nightly red build for a server nobody asked to be running. Expected red is ignored red — and the next *real* failure goes with it. |
+| Succeed | Reports a backup that did not happen. The exact silent failure the staleness and `tar -tzf` guards exist to prevent. |
+| Disable the job | The schedule then has to be remembered and re-armed by hand at wake-up. That is the step that gets forgotten. |
+
+UNSTABLE is the honest answer: nothing was backed up, nothing needed to be, and
+the job is still armed for when the server comes back.
+
+**Parking a server — order matters.** The upload path needs a running pod, so it
+cannot run after the scale-down:
+
+1. Confirm nobody is connected.
+2. Run the Jenkins backup job **while the server is still up**.
+3. Confirm the upload succeeded.
+4. Scale to 0. `AUTO_BACKUP_ON_SHUTDOWN=1` writes one final local tarball to the
+   backups PVC as it stops — that one cannot be uploaded (no pod to copy it
+   from), but Velero's daily snapshot of that PVC covers it.
+
+**Waking a server:** the first backup run after wake-up can legitimately fail the
+3-hour staleness guard, because the newest tarball on the PVC is from whenever it
+was parked. Let odin produce a fresh hourly archive before re-running the job.
+
 ## Metrics and alerts
 
 A busybox sidecar exposes four gauges on `/metrics.txt`. Only the two age metrics are in seconds:
