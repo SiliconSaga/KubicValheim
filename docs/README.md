@@ -13,6 +13,7 @@ These pages assume you have read the [root README](../README.md), which carries 
 | [networking.md](networking.md) | Ports, firewall rules, and how players actually connect |
 | [published-address.md](published-address.md) | The shared DNS name in front of the fleet, and repointing it |
 | [backups.md](backups.md) | How worlds get archived, and what the alerts mean |
+| [steam-updates.md](steam-updates.md) | Game updates via SteamCMD, and the crashloop that cannot clear itself |
 | [restore.md](restore.md) | The restore runbook — destructive, read it before running it |
 | [world-identity.md](world-identity.md) | What names a world, why a rename is not a rename, reviving old saves |
 
@@ -21,5 +22,7 @@ These pages assume you have read the [root README](../README.md), which carries 
 Running a server for the first time: [flavors.md](flavors.md), then [networking.md](networking.md).
 
 Operating an existing one: [backups.md](backups.md) and [published-address.md](published-address.md) are the two that page you.
+
+A server stuck in `CrashLoopBackOff` after a game patch: [steam-updates.md](steam-updates.md).
 
 Recovering a world from an archive: [world-identity.md](world-identity.md) first — the world name has to line up before [restore.md](restore.md) can help you.
