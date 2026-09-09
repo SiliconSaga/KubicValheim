@@ -3,8 +3,10 @@
 Instances are **data-driven**: one namespace per instance, rendered from the shared base. There is no copy-paste step, and no per-instance fork of the manifests.
 
 ```bash
+# Pick one — these are alternatives, not consecutive steps. The second would
+# refuse after the first, because the overlay it renders already exists.
 scripts/create-server.sh asgard 32556 Asgard           # render kustomize/overlays/asgard (ns valheim-asgard)
-APPLY=1 scripts/create-server.sh asgard 32556 Asgard   # render and apply
+APPLY=1 scripts/create-server.sh asgard 32556 Asgard   # render and apply in one go
 ```
 
 The three arguments are the instance slug, its game NodePort, and the world name. The query port is the game port plus one, so `32556` game implies `32557` query — allow both through the firewall.
