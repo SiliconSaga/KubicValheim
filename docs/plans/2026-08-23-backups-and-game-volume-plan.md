@@ -1094,7 +1094,7 @@ add:
   - kustomize/overlays/valheim7/
 ---
 
-`event` said nothing about which server it was. The slug now names the overlay dir, the GCS path, and the Jenkins job — the convention start-server.sh already used and this hand-written overlay had deviated from.
+`event` said nothing about which server it was. The slug now names the overlay dir, the GCS path, and the Jenkins job — the convention create-server.sh already used and this hand-written overlay had deviated from.
 
 Namespace stays `kubicvalheim` deliberately: renaming it means a new PVC, and reclaimPolicy Delete would take the Jotunheim world with the old claim.
 ```
@@ -1143,14 +1143,14 @@ slug="${1:?usage: backup-server.sh <slug> [namespace]}"
 
 # slug is a mutable Jenkins build parameter and is interpolated straight into a
 # local filename and a gs:// path below, so it is validated BEFORE ns or any path
-# is built. Same DNS-1123-label-ish convention scripts/start-server.sh already
+# is built. Same DNS-1123-label-ish convention scripts/create-server.sh already
 # uses for its <name> argument: lowercase alphanumerics and '-', start/end
 # alphanumeric — which as a side effect also rejects '/', '..', and a leading '-'.
 if [[ ! "$slug" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "ERROR: <slug> must be a DNS-1123 label (lowercase alphanumerics and '-', start/end alphanumeric)" >&2
   exit 1
 fi
-# Same bound scripts/start-server.sh enforces on <name>, for the same reason: the
+# Same bound scripts/create-server.sh enforces on <name>, for the same reason: the
 # default namespace below is valheim-<slug>, so an overly long slug would exceed
 # Kubernetes' 63-char namespace limit. Checking it here gives a clear error
 # instead of a confusing failure later against the API.
@@ -1511,7 +1511,7 @@ Run: `ws commit kubicvalheim .commits/valheim-restore-runbook.md`
 
 - [ ] **Step 1: Generate the test overlay**
 
-Run: `ws exec kubicvalheim bash scripts/start-server.sh testbed 32466 Testbed`
+Run: `ws exec kubicvalheim bash scripts/create-server.sh testbed 32466 Testbed`
 
 Creates `kustomize/overlays/testbed/` (gitignored), namespace `valheim-testbed`, ports 32466/32467.
 

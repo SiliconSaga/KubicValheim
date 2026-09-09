@@ -68,6 +68,66 @@ instances.each { inst ->
         }
     }
 
+    // Hibernate and wake are the two halves of one state transition, and both are
+    // deliberate — NO cron on either, same as restore. Nothing should put a server
+    // to sleep, or wake one, on a timer.
+    //
+    // They are separate jobs rather than one job with a direction parameter because
+    // a mis-set direction would be a silent, destructive default: "run the job" must
+    // never be ambiguous about which way it goes.
+    pipelineJob("${parentGameFolder}/${inst.slug}/hibernate") {
+        displayName("Hibernate server (backs up first)")
+
+        parameters {
+            stringParam('slug', inst.slug, 'Instance slug — names the GCS path the pre-hibernation backup lands in')
+            stringParam('namespace', inst.namespace, 'Namespace holding the server')
+            // A string rather than booleanParam so the default renders as the
+            // literal "0" the script compares against, and so an operator has to
+            // type something to opt out rather than clicking a checkbox.
+            stringParam('skipBackup', '0', 'Set to 1 to scale down WITHOUT a fresh backup — for urgent shutdowns only. The world then keeps whatever the last successful upload holds.')
+        }
+
+        definition {
+            cpsScm {
+                scm {
+                    git {
+                        remote {
+                            url('https://github.com/SiliconSaga/KubicValheim.git')
+                            credentials('GooeyHub')
+                        }
+                        branch('master')
+                    }
+                }
+                scriptPath('hibernate.Jenkinsfile')
+            }
+        }
+    }
+
+    pipelineJob("${parentGameFolder}/${inst.slug}/wake") {
+        displayName("Wake server")
+
+        parameters {
+            stringParam('slug', inst.slug, 'Instance slug')
+            stringParam('namespace', inst.namespace, 'Namespace holding the server')
+            stringParam('replicas', '1', 'Replicas to scale to. Valheim is single-instance; exposed so the value is never silently assumed.')
+        }
+
+        definition {
+            cpsScm {
+                scm {
+                    git {
+                        remote {
+                            url('https://github.com/SiliconSaga/KubicValheim.git')
+                            credentials('GooeyHub')
+                        }
+                        branch('master')
+                    }
+                }
+                scriptPath('wake.Jenkinsfile')
+            }
+        }
+    }
+
     pipelineJob("${parentGameFolder}/${inst.slug}/restore") {
         displayName("Restore server (DESTRUCTIVE)")
 

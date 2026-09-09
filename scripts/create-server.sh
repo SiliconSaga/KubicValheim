@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render a data-driven Valheim instance overlay (kills the valheim1/2/3 copy-paste).
-# Usage: start-server.sh <name> [gamePort] [world]
+# Usage: create-server.sh <name> [gamePort] [world]
 #   <name>     instance id -> namespace valheim-<name> + display name
 #   [gamePort] UDP node port for the game (default 32456; 30000-32766; query = +1)
 #   [world]    Valheim world/save name (default: capitalized <name>)
@@ -8,7 +8,7 @@
 # future Backstage scaffolder will emit. Validates, then optionally applies.
 set -euo pipefail
 
-NAME="${1:?usage: start-server.sh <name> [gamePort] [world]}"
+NAME="${1:?usage: create-server.sh <name> [gamePort] [world]}"
 GAME_PORT="${2:-32456}"
 
 # --- validate <name> first (it seeds the namespace, overlay dir, and default world) ---
@@ -56,6 +56,32 @@ QUERY_PORT=$((GAME_PORT + 1))
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OVERLAY="$ROOT/kustomize/overlays/$NAME"
+
+# --- Refuse to clobber an overlay that already exists -----------------------
+#
+# This script CREATES an instance; it does not start one. The `plain|gitops|base`
+# guard above only covers the three overlays that were committed when it was
+# written, so `create-server.sh twinhenge` would happily regenerate a curated
+# instance from defaults — losing its guarded nodePorts and its AUTO_BACKUP /
+# AUTO_BACKUP_ON_SHUTDOWN patch — and `APPLY=1` would then push that to the
+# cluster.
+#
+# That is a live footgun rather than a theoretical one: the obvious way to try to
+# start a dormant server is to reach for a script called "start-server", which is
+# what this used to be called. Renaming it to create-server.sh addresses the
+# confusion; this guard addresses the consequence.
+#
+# OVERWRITE=1 is the deliberate escape hatch for genuinely regenerating an
+# overlay, which is what "re-runnable" in the header means.
+if [ -d "$OVERLAY" ] && [ "${OVERWRITE:-0}" != "1" ]; then
+  echo "ERROR: overlay kustomize/overlays/${NAME} already exists." >&2
+  echo "  This script CREATES an instance — it would regenerate that overlay from" >&2
+  echo "  defaults and discard whatever is currently in it." >&2
+  echo "" >&2
+  echo "  To start a hibernated server:   scripts/wake-server.sh ${NAME}" >&2
+  echo "  To regenerate this overlay:     OVERWRITE=1 $0 ${NAME} ..." >&2
+  exit 1
+fi
 mkdir -p "$OVERLAY"
 
 cat > "$OVERLAY/instance-patch.yaml" <<YAML

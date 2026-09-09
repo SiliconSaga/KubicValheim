@@ -89,7 +89,7 @@ sed 's#^\./##' "$listing" > "$norm"
 # reaching the "(none)" branch that exists to explain exactly that case.
 # Match the TIMESTAMP, not the word "backup". A plain `_backup_` substring test
 # also swallows a world someone legitimately called `World_backup_legacy` —
-# start-server.sh's allowlist permits underscores, so that name is reachable, and
+# create-server.sh's allowlist permits underscores, so that name is reachable, and
 # hiding a real world is the same failure as inventing fake ones, just inverted.
 # Valheim's two copy formats both END in digits:
 #     <World>_backup_auto-20260815120940     (odin's schedule)
