@@ -41,9 +41,18 @@ OVERLAYS_DIR="$ROOT/kustomize/overlays"
 # ways on purpose: the file must be genuinely absent AND the error text must
 # name it, so an unrelated error that happens to mention "secret.yaml" is
 # never misread as this case.
+#
+# The "file not found" wording is the OS's, not kustomize's, so both spellings
+# have to be here: Unix reports "no such file or directory" and Windows reports
+# "The system cannot find the file specified". Matching only the Unix phrasing
+# made every secret-less overlay report FAIL on Windows — a red run that says
+# the manifests are broken when the only thing missing is a local secret the
+# repo deliberately does not track. Case-insensitive because the Windows text
+# is capitalised.
 is_missing_secret_failure() {
   local dir="$1" err="$2"
-  [[ ! -f "${dir}secret.yaml" ]] && grep -qE 'secret\.yaml.*no such file or directory' <<<"$err"
+  [[ ! -f "${dir}secret.yaml" ]] \
+    && grep -qiE 'secret\.yaml.*(no such file or directory|the system cannot find the file specified)' <<<"$err"
 }
 
 shopt -s nullglob
@@ -126,6 +135,33 @@ labels:
   - pairs:
       probe: "true"
     includeSelectors: true
+patches:
+  - path: multi-patch.yaml
+YAML
+
+# A MULTI-DOCUMENT patch file — the third capability this repo requires, and the
+# one that is easiest to mistake for a broken overlay. Every instance overlay's
+# instance-patch.yaml carries two documents (the Deployment's env and the metrics
+# Service's tafl_server label), and kustomize only learned to split a patch file
+# into multiple documents after v5.0: v5.0.4, which is what kubectl v1.30 vendors,
+# fails with "unable to parse SM or JSON patch from [...]" and prints the whole
+# file back at you. That error names the overlay, so without probing for it here
+# a too-old renderer reports a perfectly good overlay as FAIL and sends you
+# looking for a YAML mistake that does not exist.
+cat > "$fixture_dir/multi-patch.yaml" <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probe
+spec:
+  replicas: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: probe
+  labels:
+    patched: "true"
 YAML
 
 # A Deployment and a Service, each with their own selector, so includeSelectors
@@ -217,8 +253,12 @@ label_for() {
 #   (b) the injected `probe: "true"` label present in BOTH the Deployment's
 #       spec.selector.matchLabels AND the Service's spec.selector, proving
 #       `includeSelectors: true` actually rewrote selectors and not just
-#       metadata.labels.
-# Only a candidate whose output passes both is treated as capable.
+#       metadata.labels;
+#   (c) BOTH documents of the multi-document patch applied — the Deployment's
+#       `replicas: 3` and the Service's `patched: "true"` label. Checking only
+#       one would pass a renderer that silently applied the first document and
+#       dropped the rest, which is the same wrong answer arriving quietly.
+# Only a candidate whose output passes all three is treated as capable.
 assert_capability_output() {
   local out="$1"
   local split_dir
@@ -229,7 +269,7 @@ assert_capability_output() {
     { print > file }
   ' <<<"$out"
 
-  local has_configmap=0 deploy_ok=0 svc_ok=0 f
+  local has_configmap=0 deploy_ok=0 svc_ok=0 patch_deploy_ok=0 patch_svc_ok=0 f
   for f in "$split_dir"/doc*.yaml; do
     [[ -f "$f" ]] || continue
     if grep -q '^kind: ConfigMap$' "$f" && grep -q '^  name: probe-extra$' "$f"; then
@@ -239,16 +279,23 @@ assert_capability_output() {
       if awk '/^  selector:/{f=1} /^  template:/{f=0} f' "$f" | grep -q 'probe: "true"'; then
         deploy_ok=1
       fi
+      if grep -qE '^  replicas: 3$' "$f"; then
+        patch_deploy_ok=1
+      fi
     fi
     if grep -q '^kind: Service$' "$f"; then
       if awk '/^  selector:/{f=1} f' "$f" | grep -q 'probe: "true"'; then
         svc_ok=1
       fi
+      if grep -q 'patched: "true"' "$f"; then
+        patch_svc_ok=1
+      fi
     fi
   done
   rm -rf "$split_dir"
 
-  (( has_configmap == 1 && deploy_ok == 1 && svc_ok == 1 ))
+  (( has_configmap == 1 && deploy_ok == 1 && svc_ok == 1 \
+     && patch_deploy_ok == 1 && patch_svc_ok == 1 ))
 }
 
 candidate_ids=()
@@ -280,21 +327,36 @@ for id in "${candidate_ids[@]}"; do
 done
 
 if [[ -z "$renderer_id" ]]; then
-  echo "ERROR: no available renderer could build a minimal test overlay (using components: and labels:)." >&2
+  echo "ERROR: no available renderer could build a minimal test overlay (using components:, labels:, and a multi-document patch)." >&2
   echo >&2
   if [[ -n "$probe_err" ]]; then
     sed 's/^/    /' <<<"$probe_err" >&2
   fi
-  if grep -qE 'unknown field "(components|labels)"' <<<"$probe_err"; then
+  if grep -qE 'unknown field "(components|labels)"|unable to parse SM or JSON patch' <<<"$probe_err" \
+     || [[ -n "$probe_err" ]]; then
     cat >&2 <<'EOF'
 
-Every renderer found is too old for this repo: `components:` needs kustomize >= 3.7
-and `labels:` needs >= 4.x. Fix it with one of:
+Every renderer found is too old for this repo. It needs all three of:
+
+  components:                   kustomize >= 3.7
+  labels: (includeSelectors)    kustomize >= 4.x
+  multi-document patch files    kustomize >= 5.1
+
+That last one is the usual culprit, and the easiest to misread. `kubectl kustomize`
+uses whatever kustomize is VENDORED INSIDE kubectl — kubectl v1.30 ships v5.0.4,
+which fails on every overlay here with "unable to parse SM or JSON patch from [...]"
+because each instance-patch.yaml holds two documents. That error names the overlay,
+so it reads like a broken manifest rather than a stale renderer. Check yours with
+`kubectl version --client`.
+
+Fix it with one of:
 
   brew install kustomize                       # or your platform's package manager
   KUSTOMIZE_BIN=/path/to/kustomize tests/render-all.sh
 
-Release binaries: https://github.com/kubernetes-sigs/kustomize/releases
+A standalone `kustomize` on PATH is preferred over `kubectl kustomize` and is
+tried first. Release binaries:
+https://github.com/kubernetes-sigs/kustomize/releases
 EOF
   fi
   exit 2
