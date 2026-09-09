@@ -257,7 +257,7 @@ cleanup() {
   # VERIFY before restarting. Restoring replicas is only safe once the world is
   # actually back; doing it unconditionally converts a failed restore into a
   # silently-new world, which is worse than staying down.
-  if kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'" >/dev/null 2>&1; then
+  if kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.db" >/dev/null 2>&1; then
     kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     if [ -n "$prev_replicas" ]; then
       kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
@@ -506,8 +506,13 @@ kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
 # Extraction reporting success is still not proof the world is usable: verify
 # the two files Valheim actually needs are present and non-empty. Without this
 # a truncated-but-exit-0 extract would be swapped in and the rollback deleted.
-kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'"
-kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.fwl'"
+#
+# The path is a POSITIONAL PARAMETER to the remote `sh`, never spliced into the
+# command string: a world named "Odin's Realm" would otherwise close the quoting
+# and fail with a syntax error, which under `set -e` aborts the restore at the
+# exact moment the rollback copy is about to be discarded.
+kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.db"
+kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.fwl"
 echo "Extracted world verified: ${world}.db and ${world}.fwl both present and non-empty"
 
 # Only now is the old copy expendable — and only if there was one.
