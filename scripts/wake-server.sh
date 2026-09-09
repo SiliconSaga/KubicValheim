@@ -120,14 +120,20 @@ echo "Configured world: ${world}"
 # Same assertion restore-server.sh makes after extracting an archive: both files
 # present AND non-empty. `.fwl` carries the seed and `.db` the world itself; a
 # zero-byte either way is a world that will not load.
+#
+# The path goes to the remote `sh` as a POSITIONAL PARAMETER, never spliced into
+# the command string. WORLD is operator-set rather than attacker-set, but a world
+# name containing an apostrophe — "Odin's Realm" — would otherwise terminate the
+# quoting and break the check, and anything worse in that variable would run
+# inside the game container.
 worlds_dir=/home/steam/.config/unity3d/IronGate/Valheim/worlds_local
-if ! kctl exec -n "$ns" "$pod" -c valheim-server -- sh -c "test -s '${worlds_dir}/${world}.db'"; then
+if ! kctl exec -n "$ns" "$pod" -c valheim-server -- sh -c 'test -s "$1"' sh "${worlds_dir}/${world}.db"; then
   echo "ERROR: ${world}.db is missing or empty in worlds_local on ${pod}." >&2
   echo "  The server is running but has no world — it will generate a fresh one." >&2
   echo "  Do NOT let players connect. Check the valheim-data PVC, and see docs/restore.md." >&2
   exit 1
 fi
-if ! kctl exec -n "$ns" "$pod" -c valheim-server -- sh -c "test -s '${worlds_dir}/${world}.fwl'"; then
+if ! kctl exec -n "$ns" "$pod" -c valheim-server -- sh -c 'test -s "$1"' sh "${worlds_dir}/${world}.fwl"; then
   echo "ERROR: ${world}.fwl is missing or empty in worlds_local on ${pod}." >&2
   echo "  The world seed is gone; loading this would not give you your map back." >&2
   echo "  Do NOT let players connect. See docs/restore.md." >&2

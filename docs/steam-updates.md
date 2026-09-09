@@ -45,26 +45,65 @@ The game volume is disposable by design — it carries `backup.siliconsaga.org/c
 
 1. **Scale to 0.** `kubectl scale deployment/valheim -n <ns> --replicas=0`. This stops the crashloop and, because the volume is `ReadWriteOnce`, releases it for the next step.
 
-2. **Run SteamCMD against the volume with the manifest cleared.** A throwaway pod on the `mbround18/valheim` image with `valheim-game` mounted at `/home/steam/valheim`, running:
+2. **Run SteamCMD against the volume with the manifest cleared.** The server image already carries `steamcmd`, so a throwaway pod on the same image — mounting `valheim-game` where the server would — is the whole tool. Substitute the namespace and apply:
 
-   ```sh
-   rm -f /home/steam/valheim/steamapps/appmanifest_896660.acf
-   rm -rf /home/steam/valheim/steamapps/downloading /home/steam/valheim/steamapps/temp
-   steamcmd +@NoPromptForPassword 1 +@ShutdownOnFailedCommand 1 \
-            +@sSteamCmdForcePlatformType linux +@sSteamCmdForcePlatformBitness 64 \
-            +force_install_dir /home/steam/valheim +login anonymous \
-            +app_update 896660 validate +quit
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: steam-rescue
+     namespace: valheim-<slug>
+   spec:
+     restartPolicy: Never
+     # Matches odin's runtime uid/gid, so the install stays owned the way the
+     # server expects. A root-owned install is a second outage.
+     securityContext:
+       runAsUser: 111
+       runAsGroup: 1000
+       fsGroup: 1000
+     containers:
+       - name: steamcmd
+         image: mbround18/valheim:3.6.0   # pin to whatever the Deployment runs
+         env:
+           - name: HOME
+             value: /home/steam
+         command:
+           - bash
+           - -c
+           - |
+             set -u
+             GAME=/home/steam/valheim
+             rm -f "$GAME/steamapps/appmanifest_896660.acf"
+             rm -rf "$GAME/steamapps/downloading" "$GAME/steamapps/temp"
+             steamcmd +@NoPromptForPassword 1 +@ShutdownOnFailedCommand 1 \
+                      +@sSteamCmdForcePlatformType linux +@sSteamCmdForcePlatformBitness 64 \
+                      +force_install_dir "$GAME" +login anonymous \
+                      +app_update 896660 validate +quit
+         volumeMounts:
+           - name: game-data
+             mountPath: /home/steam/valheim
+         resources:
+           requests: { cpu: 500m, memory: 1Gi }
+           limits:   { memory: 3Gi }
+     volumes:
+       - name: game-data
+         persistentVolumeClaim:
+           claimName: valheim-game
    ```
 
-   Run it as uid 111 / gid 1000 so the install stays readable by the server.
+   Follow it with `kubectl logs -f steam-rescue -n <ns>`. If Steam is still refusing, wrap the `steamcmd` call in a retry loop inside the same pod rather than deleting more — but clear the manifest again only after a failure that returns in under a minute, since a slow failure means it was genuinely downloading and the partial state is worth keeping.
 
    **Pass odin's `@`-flags, and do not clear `~/.steam`.** SteamCMD stores its platform configuration under the Steam home at bootstrap; wiping that directory between attempts produces `Failed to install app '896660' (Missing configuration)`, a different failure that looks like progress and is not.
 
 3. **Watch for it to get past `reconfiguring`.** A healthy run moves `verifying install` -> `preallocating` -> `downloading` -> `staging` -> `verifying update` -> `Success! App '896660' fully installed.` Reaching `verifying install` is the signal that the manifest was the blocker; a run that fails back out of `reconfiguring` in under a minute has not.
 
-4. **Confirm the manifest, then scale back to 1.** `buildid` should now match the old `TargetBuildID` and `StateFlags` should be `4` (FullyInstalled, no update pending). On boot odin logs `Current build: <new>` and `No change in build version`, and the server console banner names the version it is actually running.
+4. **Confirm the manifest.** `buildid` should now match the old `TargetBuildID`, and `StateFlags` should be `4` — FullyInstalled with no update pending.
 
-If Steam is still refusing, wrap step 2 in a retry loop rather than deleting more. Clearing the manifest is the whole fix; anything beyond it is guesswork against an outage you cannot influence.
+5. **Delete the rescue pod, then bring the server back with `scripts/wake-server.sh <slug> [namespace]`.** The pod must go first: `valheim-game` is `ReadWriteOnce`, so the server cannot start while the rescue pod still holds it.
+
+   Use the script rather than `kubectl scale`. A bare scale-up only sets the replica count, which is precisely the check this situation needs and does not have — the game volume was just rewritten, and a server that comes up on a fresh empty world looks identical from the outside to one that came back correctly. `wake-server.sh` waits for Ready and then asserts the configured world's `.db` and `.fwl` are present and non-empty before calling it done.
+
+On boot odin logs `Current build: <new>` followed by `No change in build version`, and the server console banner names the version it is actually running — worth reading, because it is the only line that reports the version players will be matched against.
 
 ## When it is worth wiping instead
 
