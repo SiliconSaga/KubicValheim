@@ -25,6 +25,28 @@ metadata:
 # The join source is deliberately unscoped by endpoint: it exists only to carry a
 # label, so either endpoint being scraped is enough to keep a server's line named.
 #
+# Server status uses the same shape but a DIFFERENT join source, and the reason is
+# the one state that panel exists to show. `up` only exists while a target is being
+# scraped, and a hibernated instance has no pod, therefore no endpoints, therefore
+# no target — so joining on `up` would name every server except the parked one.
+# It joins `kube_service_labels{service="valheim-metrics"}` instead, which comes
+# from kube-state-metrics and survives the pod being gone, because the Service does:
+#
+#   * on(namespace) group_left(label_tafl_server)
+#       topk by (namespace) (1,
+#         max by (namespace, label_tafl_server) (
+#           kube_service_labels{service="valheim-metrics", label_tafl_server!=""}))
+#
+# Note `label_tafl_server`, not `tafl_server`: kube-state-metrics prefixes object
+# labels it re-exports. It only exports them at all because heimdall asks for this
+# one by name (`metricLabelsAllowlist: services=[tafl_server]`) — v2 exposes no
+# custom labels by default, so if that ever comes out of heimdall's composition
+# this panel loses every series rather than only its names, since a group_left
+# whose right-hand side is empty drops the left side too.
+#
+# Both guards carry over for the same reason they do above: mid-rename a namespace
+# can briefly present two label values, and that rejects the whole query.
+#
 # BOTH GUARDS ON THAT JOIN ARE LOAD-BEARING, and the plain form was caught failing
 # in production during this rollout. A group_left's right-hand side must be unique
 # per matching label set; the moment one namespace has two `tafl_server` values,
@@ -89,7 +111,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "label_replace(label_replace((max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"}) == 0) or (max by (namespace) (valheim_online) == 1) or ((max by (namespace) (valheim_online) == 0) + 2) or ((max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"}) > 0) * 0 + 3), \"server\", \"$1\", \"namespace\", \"(.*)\"), \"server\", \"$1\", \"namespace\", \"valheim-(.*)\")",
+              "expr": "label_replace(((max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"}) == 0) or (max by (namespace) (valheim_online) == 1) or ((max by (namespace) (valheim_online) == 0) + 2) or ((max by (namespace) (kube_deployment_spec_replicas{deployment=\"valheim\"}) > 0) * 0 + 3)) * on (namespace) group_left(label_tafl_server) topk by (namespace) (1, max by (namespace, label_tafl_server) (kube_service_labels{service=\"valheim-metrics\", label_tafl_server!=\"\"})), \"server\", \"$1\", \"label_tafl_server\", \"(.*)\")",
               "legendFormat": "{{server}}"
             }
           ],
