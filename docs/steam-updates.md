@@ -11,11 +11,23 @@ Error! App '896660' state is 0x6 after update job.
 ERROR odin::server::install: steamcmd exited with code: 8
 ```
 
-odin retries three times (5s then 10s) and then exits, so the container dies and Kubernetes backs it off. The pod sits in `CrashLoopBackOff` and the server is down.
-
 **The part that does not fix itself:** when an update fails, SteamCMD writes the failure into `steamapps/appmanifest_896660.acf` on the game volume — `StateFlags 6` and `UpdateResult 6`. On the next run it reads that state and aborts in tens of seconds *without attempting a download at all*. Every subsequent restart then fails the same way for a reason that has nothing to do with whether Steam has recovered. Waiting does not clear it.
 
-This is why two instances hit by the same outage can end up in different places: one whose retry happened to break through is fine, and one whose retry did not is stuck until someone clears the manifest.
+This is why two instances hit by the same outage can end up in different places: one whose retry happened to break through is fine, and one whose retry did not is stuck until the manifest is cleared.
+
+## What the image does about it
+
+**Image 3.7.1 and later clear it themselves.** After its retries are exhausted on exit code 8, odin resets the download state — `steamapps/downloading` and the app manifest — and retries once:
+
+```
+WARN odin::server::install: SteamCMD could not complete the app update (exit code 8).
+                            Resetting download state in /home/steam/valheim and retrying once.
+Success! App '896660' fully installed.
+```
+
+That is the whole manual recovery below, run for you, and on a stuck instance it is usually the end of the story. `steamapps/downloading` is excluded from odin's *routine* cache clear, so an interrupted download still resumes — only the post-failure reset discards it. `STEAMCMD_RESET_ON_FAILURE=0` opts out, and there is no reason to set it here.
+
+The rest of this page is for the case where that is not enough, and for anyone on an older image. Before working through it, check which image the Deployment is actually running: on 3.6.0 and earlier there is no self-recovery, and the log will show odin exiting straight after its third attempt with no "Resetting download state" line.
 
 ## Confirming it
 
@@ -55,6 +67,9 @@ The game volume is disposable by design — it carries `backup.siliconsaga.org/c
      namespace: valheim-<slug>
    spec:
      restartPolicy: Never
+     # SteamCMD talks to Steam, never to the Kubernetes API, so it has no use
+     # for a mounted service-account token.
+     automountServiceAccountToken: false
      # Matches odin's runtime uid/gid, so the install stays owned the way the
      # server expects. A root-owned install is a second outage.
      securityContext:
@@ -91,7 +106,9 @@ The game volume is disposable by design — it carries `backup.siliconsaga.org/c
            claimName: valheim-game
    ```
 
-   Follow it with `kubectl logs -f steam-rescue -n <ns>`. If Steam is still refusing, wrap the `steamcmd` call in a retry loop inside the same pod rather than deleting more — but clear the manifest again only after a failure that returns in under a minute, since a slow failure means it was genuinely downloading and the partial state is worth keeping.
+   Follow it with `kubectl logs -f steam-rescue -n <ns>`. If Steam is still refusing, wrap the `steamcmd` call in a retry loop **inside the same pod** rather than deleting more — but clear the manifest again only after a failure that returns in under a minute, since a slow failure means it was genuinely downloading and the partial state is worth keeping.
+
+   Retrying inside the pod is not a stylistic preference. `restartPolicy: Never` means a failed run leaves the Pod in `Failed` and the container is never re-run, and a Pod's `command` is immutable — so re-applying this manifest does nothing at all, silently. Retrying from outside means `kubectl delete pod steam-rescue -n <ns>` and re-applying each time, or a distinct name per attempt.
 
    **Pass odin's `@`-flags, and do not clear `~/.steam`.** SteamCMD stores its platform configuration under the Steam home at bootstrap; wiping that directory between attempts produces `Failed to install app '896660' (Missing configuration)`, a different failure that looks like progress and is not.
 

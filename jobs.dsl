@@ -128,6 +128,37 @@ instances.each { inst ->
         }
     }
 
+    // Deliberately NO cron, like hibernate and wake. Steam decides when a build
+    // exists; a timer would take the server away from players on every run to
+    // apply nothing on most of them.
+    //
+    // Takes no `world` parameter even though it verifies the world — the script
+    // reads WORLD from the running pod's own environment, which cannot drift from
+    // what the server actually booted with the way a second copy here would.
+    pipelineJob("${parentGameFolder}/${inst.slug}/upgrade") {
+        displayName("Upgrade server (to current Steam build)")
+
+        parameters {
+            stringParam('slug', inst.slug, 'Instance slug')
+            stringParam('namespace', inst.namespace, 'Namespace holding the server')
+        }
+
+        definition {
+            cpsScm {
+                scm {
+                    git {
+                        remote {
+                            url('https://github.com/SiliconSaga/KubicValheim.git')
+                            credentials('GooeyHub')
+                        }
+                        branch('master')
+                    }
+                }
+                scriptPath('upgrade.Jenkinsfile')
+            }
+        }
+    }
+
     pipelineJob("${parentGameFolder}/${inst.slug}/restore") {
         displayName("Restore server (DESTRUCTIVE)")
 
