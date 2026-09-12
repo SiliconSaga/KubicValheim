@@ -8,7 +8,9 @@ odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups`, on a dedic
 
 That volume being separate is load-bearing, not tidiness. The world PVC's root mounts at the save directory, so a `subPath` under it would make `/home/steam/backups` *be* `<savedir>/backups` — and odin archives the whole save directory. Every hourly tarball would then contain all previous ones, growing until the volume filled and world writes failed.
 
-Pruning is on (`AUTO_BACKUP_REMOVE_OLD=1`, `DAYS_TO_LIVE=3`), so the backups volume should stay small.
+Pruning is on (`AUTO_BACKUP_REMOVE_OLD=1`, `DAYS_TO_LIVE=1`), so the backups volume should stay small.
+
+**One day is deliberate, and it is tied to the offload below.** Hourly tarballs are what gives you an hour-resolution rollback point; keeping them longer than the interval at which a copy leaves the cluster just buys the same days twice. Everything older than a day is already held by the nightly Jenkins upload to GCS and by Velero's snapshot of this PVC, so the retention window covers the gap between off-cluster copies rather than duplicating them. At three days the volume held ~72 archives and ran past 80% on a 10Gi claim.
 
 **`AUTO_BACKUP_ON_SHUTDOWN` is evaluated independently of `AUTO_BACKUP`.** Leaving it enabled in base would write a tarball on every pod termination even for overlays that believe backups are switched off — with no pruning and no alerting on those archives.
 
