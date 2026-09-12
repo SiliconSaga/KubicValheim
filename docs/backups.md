@@ -10,7 +10,9 @@ That volume being separate is load-bearing, not tidiness. The world PVC's root m
 
 Pruning is on (`AUTO_BACKUP_REMOVE_OLD=1`, `DAYS_TO_LIVE=1`), so the backups volume should stay small.
 
-**One day is deliberate, and it is tied to the offload below.** Hourly tarballs are what gives you an hour-resolution rollback point; keeping them longer than the interval at which a copy leaves the cluster just buys the same days twice. Everything older than a day is already held by the nightly Jenkins upload to GCS and by Velero's snapshot of this PVC, so the retention window covers the gap between off-cluster copies rather than duplicating them. At three days the volume held ~72 archives and ran past 80% on a 10Gi claim.
+**One day is deliberate, and it is tied to the offload below.** Hourly tarballs are what gives you an hour-resolution rollback point, and the window that needs that resolution is the recent one — a problem you notice within the day.
+
+Be precise about what the older days still hold, because it is not the same thing. The nightly Jenkins job uploads the **newest archive only**, and Velero snapshots this PVC daily, so beyond a day you keep the days, not the hours inside them. Dropping from three days to one costs hourly granularity for days two and three; it does not cost those days. At three days the volume held ~72 archives and ran past 80% on a 10Gi claim.
 
 **`AUTO_BACKUP_ON_SHUTDOWN` is evaluated independently of `AUTO_BACKUP`.** Leaving it enabled in base would write a tarball on every pod termination even for overlays that believe backups are switched off — with no pruning and no alerting on those archives.
 

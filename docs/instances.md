@@ -15,15 +15,18 @@ The three arguments are the instance slug, its game NodePort, and the world name
 
 ## Lifecycle
 
-Five verbs, each with a script and a per-instance Jenkins job:
+Six verbs, each with a script. All but `create` also have a per-instance Jenkins job:
 
-| Verb | Script | What it does |
-|---|---|---|
-| create | `create-server.sh` | renders a **new** instance overlay |
-| wake | `wake-server.sh` | scales to 1, waits, **verifies the world came back** |
-| upgrade | `upgrade-server.sh` | restarts onto the current Steam build, then verifies |
-| hibernate | `hibernate-server.sh` | fresh backup → upload → scale to 0 |
-| restore | `restore-server.sh` | **destructive**; replaces the world from an archive |
+| Verb | Script | Jenkins job | What it does |
+|---|---|---|---|
+| create | `create-server.sh` | no | renders a **new** instance overlay |
+| backup | `backup-server.sh` | yes | ships the newest archive off-cluster, nightly |
+| wake | `wake-server.sh` | yes | scales to 1, waits, **verifies the world came back** |
+| upgrade | `upgrade-server.sh` | yes | restarts onto the current Steam build, then verifies |
+| hibernate | `hibernate-server.sh` | yes | fresh backup → upload → scale to 0 |
+| restore | `restore-server.sh` | yes | **destructive**; replaces the world from an archive |
+
+`create` is the odd one out because its output is a directory in **this repository**, not a change to a running cluster: it writes `kustomize/overlays/<name>/`, which then has to be reviewed and committed. A Jenkins job would have nowhere to put that.
 
 `upgrade` exists because odin already updates on every start, so the restart *is* the upgrade — what a bare `kubectl rollout restart` never gave you is an answer. It delegates the wait and the world check to `wake-server.sh` rather than repeating them, which is why an upgrade of a healthy server ends on wake's exit 2: "it was already awake and its world verified" is exactly what a good upgrade looks like. An instance that is hibernated is not upgraded at all — it picks up whatever is current when someone wakes it.
 
