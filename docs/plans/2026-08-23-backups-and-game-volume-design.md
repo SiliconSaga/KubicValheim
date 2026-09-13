@@ -86,7 +86,7 @@ Jobs are generated per instance by `jobs.dsl` under `KubicGameHosting/Valheim/<s
 
 One identifier per instance drives everything that is **not** namespaced: the overlay directory, the namespace, node ports, the GCP firewall rule name, the GCS path, and the Jenkins job path. In-namespace resource names (`valheim-data`, `valheim`, `valheim-secrets`) stay generic — they are namespaced and do not collide, and renaming valheim7's PVC would orphan the existing claim and delete Jotunheim with it, since `standard-rwo` has `reclaimPolicy: Delete`.
 
-`scripts/start-server.sh` already implements this convention for generated overlays. The hand-written `event` overlay deviated from it and is renamed to `valheim7` — a repo-only change, since the namespace is declared inside the kustomization.
+`scripts/create-server.sh` already implements this convention for generated overlays. The hand-written `event` overlay deviated from it and is renamed to `valheim7` — a repo-only change, since the namespace is declared inside the kustomization.
 
 valheim7 keeps namespace `kubicvalheim`, grandfathered. Whether instances get one namespace each is a Phase-3/tafl architectural decision, not something to force now; the expectation is that valheim7 is eventually **restored into** its Phase-3 home from a bucket file rather than migrated in place.
 
@@ -165,7 +165,7 @@ Any future stray PrometheusRule will be picked up automatically — that is the 
 All of this is proven on a **new throwaway instance**; valheim7 is load-bearing and is not touched until the test passes.
 
 ```
-scripts/start-server.sh testbed 32466 Testbed
+scripts/create-server.sh testbed 32466 Testbed
   -> ns valheim-testbed, ports 32466/32467
   -> firewall rule kubicvalheim-testbed udp:32466-32467
 ```

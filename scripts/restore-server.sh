@@ -83,7 +83,7 @@ fi
 
 # <world> only ever flows into literal grep -F patterns and log/echo text below
 # — never into a path or command substitution — so it needs no shell-safety
-# validation. This is the same printable-name allowlist start-server.sh enforces
+# validation. This is the same printable-name allowlist create-server.sh enforces
 # when it WRITES a world name; it just catches a typo'd/empty value early with a
 # clear error instead of a confusing miss deep in step 4's grep.
 world_re='^[A-Za-z0-9 _-]+$'
@@ -257,7 +257,7 @@ cleanup() {
   # VERIFY before restarting. Restoring replicas is only safe once the world is
   # actually back; doing it unconditionally converts a failed restore into a
   # silently-new world, which is worse than staying down.
-  if kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'" >/dev/null 2>&1; then
+  if kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.db" >/dev/null 2>&1; then
     kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     if [ -n "$prev_replicas" ]; then
       kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
@@ -335,7 +335,7 @@ sed 's#^\./##' "$listing_raw" > "$listing_norm"
 #     <World>_backup_20260206-235715         (manual / version upgrade)
 # Matching only the first made a real legacy archive report three worlds where it
 # held one; matching a bare `_backup_` substring would instead hide a world
-# someone legitimately called `World_backup_legacy`, which start-server.sh's
+# someone legitimately called `World_backup_legacy`, which create-server.sh's
 # allowlist permits. Anchoring on trailing digits catches exactly the copies.
 archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
   | awk '!(/_backup_auto-[0-9]+$/ || /_backup_[0-9]+-[0-9]+$/)' | sort -u | tr '\n' ' ')"
@@ -506,8 +506,13 @@ kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
 # Extraction reporting success is still not proof the world is usable: verify
 # the two files Valheim actually needs are present and non-empty. Without this
 # a truncated-but-exit-0 extract would be swapped in and the rollback deleted.
-kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.db'"
-kctl exec "$helper" -n "$ns" -- sh -c "test -s '/world/worlds_local/${world}.fwl'"
+#
+# The path is a POSITIONAL PARAMETER to the remote `sh`, never spliced into the
+# command string: a world named "Odin's Realm" would otherwise close the quoting
+# and fail with a syntax error, which under `set -e` aborts the restore at the
+# exact moment the rollback copy is about to be discarded.
+kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.db"
+kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.fwl"
 echo "Extracted world verified: ${world}.db and ${world}.fwl both present and non-empty"
 
 # Only now is the old copy expendable — and only if there was one.

@@ -3,11 +3,36 @@
 Instances are **data-driven**: one namespace per instance, rendered from the shared base. There is no copy-paste step, and no per-instance fork of the manifests.
 
 ```bash
-scripts/start-server.sh asgard 32556 Asgard           # render kustomize/overlays/asgard (ns valheim-asgard)
-APPLY=1 scripts/start-server.sh asgard 32556 Asgard   # render and apply
+# Pick one — these are alternatives, not consecutive steps. The second would
+# refuse after the first, because the overlay it renders already exists.
+scripts/create-server.sh asgard 32556 Asgard           # render kustomize/overlays/asgard (ns valheim-asgard)
+APPLY=1 scripts/create-server.sh asgard 32556 Asgard   # render and apply in one go
 ```
 
 The three arguments are the instance slug, its game NodePort, and the world name. The query port is the game port plus one, so `32556` game implies `32557` query — allow both through the firewall.
+
+> **`create-server.sh` CREATES an instance — it does not start one.** It was called `start-server.sh`, which invited exactly the wrong use: reaching for it to bring a hibernated server back up. It regenerates `kustomize/overlays/<name>/` from defaults, so running it against a curated instance would discard that instance's guarded nodePorts and backup patches. It now refuses when the overlay already exists (`OVERWRITE=1` to override deliberately).
+
+## Lifecycle
+
+Six verbs, each with a script. All but `create` also have a per-instance Jenkins job:
+
+| Verb | Script | Jenkins job | What it does |
+|---|---|---|---|
+| create | `create-server.sh` | no | renders a **new** instance overlay |
+| backup | `backup-server.sh` | yes | ships the newest archive off-cluster, nightly |
+| wake | `wake-server.sh` | yes | scales to 1, waits, **verifies the world came back** |
+| upgrade | `upgrade-server.sh` | yes | restarts onto the current Steam build, then verifies |
+| hibernate | `hibernate-server.sh` | yes | fresh backup → upload → scale to 0 |
+| restore | `restore-server.sh` | yes | **destructive**; replaces the world from an archive |
+
+`create` is the odd one out because its output is a directory in **this repository**, not a change to a running cluster: it writes `kustomize/overlays/<name>/`, which then has to be reviewed and committed. A Jenkins job would have nowhere to put that.
+
+`upgrade` exists because odin already updates on every start, so the restart *is* the upgrade — what a bare `kubectl rollout restart` never gave you is an answer. It delegates the wait and the world check to `wake-server.sh` rather than repeating them, which is why an upgrade of a healthy server ends on wake's exit 2: "it was already awake and its world verified" is exactly what a good upgrade looks like. An instance that is hibernated is not upgraded at all — it picks up whatever is current when someone wakes it.
+
+Hibernate and wake are the two halves of one transition, and **both are `spec.replicas`**. That value is the dormancy signal the whole system agrees on: `ValheimDown` suppresses on it, and the backup job reports UNSTABLE rather than failing on it. See [backups.md](backups.md).
+
+Neither job is on a cron. Putting a server to sleep, or waking it, is a deliberate act — the same reasoning that keeps restore manual-only.
 
 ## Choosing a port
 

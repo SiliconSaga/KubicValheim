@@ -8,7 +8,11 @@ odin's `AUTO_BACKUP` writes hourly tarballs to `/home/steam/backups`, on a dedic
 
 That volume being separate is load-bearing, not tidiness. The world PVC's root mounts at the save directory, so a `subPath` under it would make `/home/steam/backups` *be* `<savedir>/backups` — and odin archives the whole save directory. Every hourly tarball would then contain all previous ones, growing until the volume filled and world writes failed.
 
-Pruning is on (`AUTO_BACKUP_REMOVE_OLD=1`, `DAYS_TO_LIVE=3`), so the backups volume should stay small.
+Pruning is on (`AUTO_BACKUP_REMOVE_OLD=1`, `DAYS_TO_LIVE=1`), so the backups volume should stay small.
+
+**One day is deliberate, and it is tied to the offload below.** Hourly tarballs are what gives you an hour-resolution rollback point, and the window that needs that resolution is the recent one — a problem you notice within the day.
+
+Be precise about what the older days still hold, because it is not the same thing. The nightly Jenkins job uploads the **newest archive only**, and Velero snapshots this PVC daily, so beyond a day you keep the days, not the hours inside them. Dropping from three days to one costs hourly granularity for days two and three; it does not cost those days. At three days the volume held ~72 archives and ran past 80% on a 10Gi claim.
 
 **`AUTO_BACKUP_ON_SHUTDOWN` is evaluated independently of `AUTO_BACKUP`.** Leaving it enabled in base would write a tarball on every pod termination even for overlays that believe backups are switched off — with no pruning and no alerting on those archives.
 
@@ -46,14 +50,33 @@ The three obvious alternatives are each worse:
 UNSTABLE is the honest answer: nothing was backed up, nothing needed to be, and
 the job is still armed for when the server comes back.
 
-**Parking a server — order matters.** The upload path needs a running pod, so it
-cannot run after the scale-down:
+**Hibernating a server — use the job.** `scripts/hibernate-server.sh`, and the
+per-instance **Hibernate server** Jenkins job that wraps it, exist precisely
+because the ordering is not the intuitive one. The upload path needs a running
+pod, so it cannot run after the scale-down. The script does, in order:
 
-1. Confirm nobody is connected.
-2. Run the Jenkins backup job **while the server is still up**.
-3. Confirm the upload succeeded.
-4. Scale to 0. `AUTO_BACKUP_ON_SHUTDOWN=1` writes one final local tarball to the
+1. Refuse if already hibernated (exit 2 → UNSTABLE).
+2. Warn if the server log still shows connections.
+3. Ask odin for a **fresh** archive — see below.
+4. Run `backup-server.sh`, which applies the staleness and `tar -tzf` guards and
+   refreshes the upload marker. **If this fails, it does not scale down.**
+5. Scale to 0. `AUTO_BACKUP_ON_SHUTDOWN=1` writes one final local tarball to the
    backups PVC as it stops.
+
+`SKIP_BACKUP=1` (the `skipBackup` job parameter) scales down without step 3 or 4,
+for urgent shutdowns. It does not change the resulting state — a server stopped
+in a hurry and one hibernated properly are both `spec.replicas: 0` and
+indistinguishable afterwards. The difference is only whether a fresh archive
+reached GCS, which is why the default takes one.
+
+**Why a fresh archive rather than the newest hourly.** Without step 3,
+wake-then-hibernate deadlocks: the staleness guard rejects anything older than
+3h, and immediately after a wake the newest tarball on the PVC is the *shutdown*
+archive from the previous hibernation, already hours old. Observed exactly that —
+`newest backup is 10878s old (limit 10800s)` — leaving only "wait for odin's next
+hourly" or "skip the backup" as ways forward, neither of which is a reasonable
+answer to *put this server to sleep*. A hibernation backup should also simply
+capture the world as it is **now**, not up to an hour ago.
 
 **That final tarball is not protected immediately.** It cannot be uploaded —
 there is no pod left to copy it from — so it waits for the *next* Velero
@@ -68,9 +91,17 @@ copy in GCS. It matters only if you are relying on that last archive
 specifically — in which case wait for the next snapshot before deleting
 anything.
 
-**Waking a server:** the first backup run after wake-up can legitimately fail the
-3-hour staleness guard, because the newest tarball on the PVC is from whenever it
-was parked. Let odin produce a fresh hourly archive before re-running the job.
+**Waking a server:** use `scripts/wake-server.sh` or the **Wake server** job. It
+scales up, waits for Ready, and then **verifies a world actually came back** — a
+server that starts with an empty world is indistinguishable from a healthy one
+from the outside, which is the same reasoning [restore.md](restore.md) applies to
+restores. It fails loudly if `worlds_local` is empty, because the next thing that
+happens otherwise is players connecting to a freshly generated map.
+
+The first *scheduled* backup after a wake can still legitimately fail the 3-hour
+staleness guard, since the newest tarball dates from the hibernation. Let odin
+write a fresh hourly archive, or just hibernate again — that path takes its own
+fresh archive and is unaffected.
 
 ## Metrics and alerts
 

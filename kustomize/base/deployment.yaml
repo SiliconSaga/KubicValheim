@@ -48,7 +48,29 @@ spec:
               mountPath: /valheim-config
       containers:
         - name: valheim-server
-          image: mbround18/valheim:3.6.0
+          image: mbround18/valheim:3.8.0
+          # PINNED TO THE LEGACY UID ON PURPOSE — this is not leftover config.
+          #
+          # 3.8.0 moves the image's `steam` account from uid 111 to uid 1000. Left
+          # unpinned, the server would start running as 1000 against volumes whose
+          # every file is owned 111:1000, and new files would be written as 1000 —
+          # leaving the world and game volumes permanently split between two owners.
+          # The 775/664 modes and the shared gid 1000 mean that probably still
+          # works, which is exactly what makes it a bad thing to find out by
+          # accident on a live world.
+          #
+          # Upstream kept a `steam-legacy` passwd entry on uid 111 specifically so
+          # existing `runAsUser: 111` deployments keep working, and their image
+          # tests assert it. A uid WITHOUT a passwd entry is not merely awkward
+          # here: the Valheim server segfaults at startup inside PlayFab's logger,
+          # so 111 and 1000 are the only two safe choices, and 111 is the one that
+          # needs no migration.
+          #
+          # Moving to 1000 is a separate change — it wants an fsGroup or a one-off
+          # chown of both PVCs, done deliberately with the server stopped.
+          securityContext:
+            runAsUser: 111
+            runAsGroup: 1000
           resources:
             requests:
               # 200m, measured rather than guessed. Steady-state p95 across the
