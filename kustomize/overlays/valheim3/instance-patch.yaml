@@ -12,6 +12,16 @@ spec:
               value: "KubicHelheim"
             - name: WORLD
               value: "valheim3"
+            # Free building: no material cost. Everything else stays vanilla.
+            # Matches Jotunheim.
+            #
+            # NOTE: -setkey writes into the world DB PERMANENTLY. This env var is a
+            # one-time TRIGGER, not a declaration — deleting it later will NOT turn
+            # free building back off, which needs `removekey nobuildcost` from the
+            # in-game console as an admin. It is kept here as the record of intent;
+            # the world itself is the source of truth.
+            - name: SET_KEY
+              value: "nobuildcost"
 ---
 # The metrics Service carries this instance's display name so the ServiceMonitor's
 # `targetLabels` can stamp it onto every series scraped from it — huginn's game

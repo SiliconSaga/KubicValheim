@@ -22,6 +22,18 @@ spec:
             # from the in-game console as an admin.
             - name: SET_KEY
               value: "nobuildcost"
+            # Milder death penalty: keep items and equipment, no skill loss, no
+            # corpse run. Matches how Twinhenge already plays.
+            #
+            # Comma-separated key=value, per odin's documented `combat=easy,raids=muchmore`
+            # form — NOT a bare `deathpenalty casual`.
+            #
+            # Unlike SET_KEY above, this is passed on every start, so this line is
+            # the live setting rather than a one-time trigger. Confirm it took after
+            # the next roll: odin prints `[Valheim] Modifiers:` during startup, and
+            # that line is empty when nothing was applied.
+            - name: MODIFIERS
+              value: "deathpenalty=casual"
 ---
 # The metrics Service carries this instance's display name so the ServiceMonitor's
 # `targetLabels` can stamp it onto every series scraped from it — huginn's game

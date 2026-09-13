@@ -84,12 +84,9 @@ snapshot of the `valheim-backups` PVC, which is external to this repo and runs
 daily. Depending on when you park the server that is **up to ~24 hours** during
 which the shutdown archive exists only on the PVC.
 
-That is usually an acceptable gap rather than a real exposure, because the
-shutdown tarball is a *duplicate* of a world that is already covered: the
-`valheim-data` PVC is snapshotted on the same schedule, and step 2 above put a
-copy in GCS. It matters only if you are relying on that last archive
-specifically — in which case wait for the next snapshot before deleting
-anything.
+That is usually an acceptable gap rather than a real exposure, because the shutdown tarball is a *duplicate* of a world that is already covered: the `valheim-data` PVC is snapshotted on the same schedule, and step 4 above put a fresh copy in GCS. It matters only if you are relying on that last archive specifically — in which case wait for the next snapshot before deleting anything.
+
+**None of that reassurance survives `SKIP_BACKUP=1`.** Steps 3 and 4 are exactly what that flag skips, so nothing fresh reached GCS: the newest archive there is whatever the last successful run left, which may be days old. The shutdown tarball is then the only copy of everything played since — and it is the one copy that cannot be uploaded, because there is no pod left to copy it from. After an emergency hibernation the Velero window is real exposure rather than a formality, so wake the server long enough to take a proper backup once the urgency has passed.
 
 **Waking a server:** use `scripts/wake-server.sh` or the **Wake server** job. It
 scales up, waits for Ready, and then **verifies a world actually came back** — a
