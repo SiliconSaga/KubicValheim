@@ -36,7 +36,10 @@
 #   sh -c "$WORLD_PRESENT_SH" sh <worlds_dir> <world>
 #
 # Exits 0 and names the layout when <world> is present and non-empty in either
-# form; exits 1, printing nothing, otherwise. The two values arrive as positional
+# form; exits 1, printing nothing, otherwise. The generation must be all digits,
+# the same contract archive_world_saves enforces on a listing, so the live check
+# and the archive gate cannot disagree about a stray `_main.bad.fwl2`. The two
+# values arrive as positional
 # parameters and are never spliced into the string — a world named "Odin's
 # Realm" would otherwise end the quoting, and anything worse would run inside
 # the container.
@@ -52,6 +55,9 @@ if [ -d "$dir/$world" ]; then
   for fwl2 in "$dir/$world"/_main.*.fwl2; do
     [ -s "$fwl2" ] || continue
     save="${fwl2%.fwl2}"
+    case "${save##*/_main.}" in
+      ""|*[!0-9]*) continue ;;
+    esac
     [ -s "$save.db2" ] || continue
     echo "chunked layout (Valheim 1.0+): $world/ at save ${save##*/_main.}"
     ls -l "$save".*

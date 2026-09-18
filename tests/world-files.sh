@@ -77,6 +77,11 @@ mkdir -p "$wl/Bare"
 printf 'chunk' > "$wl/Bare/00_00__0_1.chunk"
 expect "chunked directory with chunks but no metadata" 1 present "$wl" Bare
 
+mkdir -p "$wl/Bad"
+printf 'db2' > "$wl/Bad/_main.x.db2"
+printf 'fwl2' > "$wl/Bad/_main.x.fwl2"
+expect "chunked directory whose only generation is not numeric" 1 present "$wl" Bad
+
 mkdir -p "$wl/Odin's Realm"
 printf 'db2' > "$wl/Odin's Realm/_main.1.db2"
 printf 'fwl2' > "$wl/Odin's Realm/_main.1.fwl2"

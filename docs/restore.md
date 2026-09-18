@@ -45,14 +45,15 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
     ws k8s exec restore-helper -n <ns> -- tar tzf /tmp/restore.tar.gz > /tmp/restore-listing-raw.txt
     echo "tar exit status: $?"    # MUST be 0 — if not, STOP, the archive is bad
     sed 's#^\./##' /tmp/restore-listing-raw.txt > /tmp/restore-listing.txt
+    WORLD=Jotunheim        # the name this instance is configured for — quote an apostrophe as WORLD="Odin's Realm"
     # either layout, one COMPLETE pair — legacy .db + .fwl, or _main.<N>.fwl2 + .db2 with the same <N>
     . scripts/lib/world-files.sh
-    archive_has_world /tmp/restore-listing.txt '<WORLD>'   # MUST exit 0 — if not, STOP, wrong archive
+    archive_has_world /tmp/restore-listing.txt "$WORLD"   # MUST exit 0 — if not, STOP, wrong archive
     ws k8s exec restore-helper -n <ns> -- ls -la /world/worlds_local
     ws k8s exec restore-helper -n <ns> -- sh -c 'rm -rf /world/worlds_local.rollback && mv /world/worlds_local /world/worlds_local.rollback'
     ws k8s exec restore-helper -n <ns> -- tar xzf /tmp/restore.tar.gz -C /world
     # verify the extracted world in whichever layout the archive carried
-    ws k8s exec restore-helper -n <ns> -- sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local '<WORLD>'
+    ws k8s exec restore-helper -n <ns> -- sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local "$WORLD"
     ws k8s exec restore-helper -n <ns> -- rm -rf /world/worlds_local.rollback
     ws k8s delete pod restore-helper -n <ns>
 
@@ -61,7 +62,7 @@ Start a throwaway pod mounting the world PVC, copy the tarball in, verify it's a
 **If anything above fails, roll back BEFORE restarting the server.** Put the old world back, and only then scale up. The swap is guarded on the rollback copy existing: a failure *before* the staging `mv` ran has nothing to undo, and an unguarded `rm -rf /world/worlds_local` at that point would delete the intact world with nothing to put back.
 
     ws k8s exec restore-helper -n <ns> -- sh -c 'if [ -d /world/worlds_local.rollback ]; then rm -rf /world/worlds_local && mv /world/worlds_local.rollback /world/worlds_local; else echo "no rollback copy — the live world was never staged aside, leave it"; fi'
-    ws k8s exec restore-helper -n <ns> -- sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local '<WORLD>'   # MUST pass before step 4
+    ws k8s exec restore-helper -n <ns> -- sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local "$WORLD"   # MUST pass before step 4
 
 If that check does not pass, **leave the deployment at zero replicas**. A stopped server is loud and recoverable; a running server with no world generates a fresh one and overwrites the evidence.
 
