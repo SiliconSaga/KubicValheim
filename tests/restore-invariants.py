@@ -87,6 +87,19 @@ CHECKS = [
      lambda: "Refusing to continue: every safe path from here depends on knowing" in src),
     ("prior state is read as output, not as an exit status",
      lambda: "if [ -d /world/worlds_local ]; then echo EXISTS; else echo ABSENT; fi" in src),
+    # The extracted tree is verified with the shared layout check — not a bare
+    # `test -s <World>.db`, which Valheim 1.0's directory layout never satisfies
+    # — and that verification sits between the extract and the moment the
+    # rollback copy is discarded. Scoped from the extract onward: the rollback
+    # branch also verifies, earlier in the file, and must not satisfy this.
+    ("the extracted world is verified in both layouts before the rollback copy goes",
+     lambda: ordered_within(
+         src[src.index("-- tar xzf /tmp/restore.tar.gz -C /world"):],
+         'sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local',
+         "rm -rf /world/worlds_local.rollback",
+     )),
+    ("no verification still assumes the legacy <World>.db file",
+     lambda: "test -s" not in src),
 ]
 
 failed = 0
