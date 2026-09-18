@@ -108,11 +108,14 @@ else
         fi
         ;;
       chunked)
-        saves="$(sed -n "s#^worlds_local/${w}/_main\.\([0-9][0-9]*\)\.fwl2\$#\1#p" "$norm" | sort -n | tr '\n' ' ')"
-        if archive_has_world "$norm" "$w"; then
+        # Complete generations only — a .fwl2 whose .db2 is missing or carries a
+        # different save number is not a restorable save, and the restore's own
+        # gate would refuse it.
+        saves="$(archive_world_saves "$norm" "$w" | tr '\n' ' ')"
+        if [ -n "$saves" ]; then
           echo "  ${w}    (Valheim 1.0 directory: save ${saves% })"
         else
-          echo "  ${w}    (Valheim 1.0 directory: save ${saves% }, .db2 MISSING)"
+          echo "  ${w}    (Valheim 1.0 directory: NO complete _main.<N>.fwl2 + .db2 pair — not restorable)"
         fi
         ;;
     esac

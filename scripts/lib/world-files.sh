@@ -73,7 +73,7 @@ archive_world_names() {
   sed -n \
     -e 's#^worlds_local/\([^/]*\)\.db$#\1#p' \
     -e 's#^worlds_local/\([^/]*\)/_main\.[0-9][0-9]*\.fwl2$#\1#p' \
-    "$1" | sort -u
+    "$1" | LC_ALL=C sort -u
 }
 
 # Valheim's own point-in-time copies live beside the live world under decorated
@@ -98,34 +98,55 @@ archive_backup_copy_names() {
   archive_world_names "$1" | awk "${WORLD_BACKUP_COPY_AWK}"
 }
 
-# True when the listing carries world $2 in either layout. Whole-line matches
-# only: a substring match would let "World.1" satisfy "WorldX1", the exact
-# mistake restore-server.sh documents. The legacy check stays literal (-F); the
-# chunked one needs a regex for <N>, so the name is escaped for ERE first — the
-# allowed character set is letters, digits, space, hyphen and underscore, none of
-# which need it, but the escape costs nothing and the check should not depend on
-# a validation that lives in another file.
+# Save numbers <N> for which the listing has `worlds_local/<world>/_main.<N>.fwl2`
+# — paired with its `.db2` or not. The world name is matched as a LITERAL
+# prefix via awk's index(), never interpolated into a regex or a sed
+# expression: a name is anything without a `/` (an archive from elsewhere can
+# hold `A#B` or `World.1`), and "World.1" as a pattern would happily match
+# "WorldX1", the substring mistake restore-server.sh documents. Only the part
+# after the prefix, `<digits>.fwl2`, is tested with a pattern.
+_archive_world_fwl2_saves() {
+  awk -v p="worlds_local/$2/_main." '
+    index($0, p) == 1 {
+      r = substr($0, length(p) + 1)
+      if (r ~ /^[0-9]+\.fwl2$/) print substr(r, 1, length(r) - 5)
+    }' "$1" | sort -n
+}
+
+# The subset of those saves that are COMPLETE: the `.db2` with the same <N> is
+# also present. Same rule as WORLD_PRESENT_SH on disk — `_main.1.fwl2` next to
+# `_main.2.db2` is no loadable generation at all, and pre-clear validation must
+# not accept what the post-extract check would then refuse.
+archive_world_saves() {
+  local listing="$1" world="$2" n
+  for n in $(_archive_world_fwl2_saves "$listing" "$world"); do
+    if grep -Fqx -- "worlds_local/${world}/_main.${n}.db2" "$listing"; then
+      echo "$n"
+    fi
+  done
+}
+
+# True when the listing carries world $2 in either layout: the literal `.db` +
+# `.fwl` pair, or a directory with at least one complete save generation.
 archive_has_world() {
-  local listing="$1" world="$2" esc
+  local listing="$1" world="$2"
   if grep -Fqx -- "worlds_local/${world}.db" "$listing" \
      && grep -Fqx -- "worlds_local/${world}.fwl" "$listing"; then
     return 0
   fi
-  esc="$(printf '%s' "$world" | sed 's/[][\.*^$/+?(){}|]/\\&/g')"
-  grep -qE -- "^worlds_local/${esc}/_main\.[0-9]+\.fwl2$" "$listing" \
-    && grep -qE -- "^worlds_local/${esc}/_main\.[0-9]+\.db2$" "$listing"
+  [ -n "$(archive_world_saves "$listing" "$world")" ]
 }
 
 # One word naming the layout the listing holds world $2 in: `legacy`, `chunked`,
-# or `absent`. For reporting; archive_has_world is the gate.
+# or `absent`. For reporting; archive_has_world is the gate, so `chunked` here
+# can still fail it (a directory with no complete pair).
 archive_world_layout() {
-  local listing="$1" world="$2" esc
+  local listing="$1" world="$2"
   if grep -Fqx -- "worlds_local/${world}.db" "$listing"; then
     echo legacy
     return 0
   fi
-  esc="$(printf '%s' "$world" | sed 's/[][\.*^$/+?(){}|]/\\&/g')"
-  if grep -qE -- "^worlds_local/${esc}/_main\.[0-9]+\.fwl2$" "$listing"; then
+  if [ -n "$(_archive_world_fwl2_saves "$listing" "$world")" ]; then
     echo chunked
     return 0
   fi

@@ -106,6 +106,15 @@ worlds_local/Jotunheim_backup_20260909-081232.db
 worlds_local/Jotunheim_backup_20260909-081232.fwl
 worlds_local/World_backup_legacy.db
 worlds_local/World_backup_legacy.fwl
+worlds_local/Mismatch/_main.1.fwl2
+worlds_local/Mismatch/_main.2.db2
+worlds_local/Multi/_main.3.fwl2
+worlds_local/Multi/_main.4.fwl2
+worlds_local/Multi/_main.4.db2
+worlds_local/A#B/_main.7.fwl2
+worlds_local/A#B/_main.7.db2
+worlds_local/WorldX1/_main.1.fwl2
+worlds_local/WorldX1/_main.1.db2
 EOF
 
 names="$(archive_world_names "$listing" | tr '\n' ' ')"
@@ -116,7 +125,7 @@ expect "names: .db.old rotation is not a world" 1 sh -c 'case " $1 " in *" Legac
 
 live="$(archive_live_world_names "$listing" | tr '\n' ' ')"
 copies="$(archive_backup_copy_names "$listing" | tr '\n' ' ')"
-expect "live: legacy and chunked worlds, nothing else" 0 sh -c '[ "$1" = "Jotunheim JotunheimX Legacy World_backup_legacy " ]' sh "$live"
+expect "live: legacy and chunked worlds, nothing else" 0 sh -c '[ "$1" = "A#B Jotunheim JotunheimX Legacy Mismatch Multi WorldX1 World_backup_legacy " ]' sh "$live"
 expect "copies: pre-1.0 auto, 1.0 hyphenated auto, and manual copies" 0 sh -c '[ "$1" = "Jotunheim_backup_20260909-081232 Jotunheim_backup_auto-20260917-172727 Legacy_backup_auto-20260815120940 " ]' sh "$copies"
 
 expect "has: legacy pair" 0 archive_has_world "$listing" Legacy
@@ -124,11 +133,21 @@ expect "has: chunked directory" 0 archive_has_world "$listing" Jotunheim
 expect "has: missing world" 1 archive_has_world "$listing" Helheim
 expect "has: whole-name match only (Jotunheim vs JotunheimX)" 0 archive_has_world "$listing" JotunheimX
 expect "has: a name that is only a prefix of a real one" 1 archive_has_world "$listing" Jotunhei
+expect "has: .fwl2 and .db2 with DIFFERENT save numbers is no world" 1 archive_has_world "$listing" Mismatch
+expect "has: one complete pair among several generations" 0 archive_has_world "$listing" Multi
+expect "has: a name with a sed delimiter and regex chars is matched literally" 0 archive_has_world "$listing" "A#B"
+expect "has: 'World.1' does not match the directory 'WorldX1'" 1 archive_has_world "$listing" "World.1"
+
+saves_are() { [ "$(archive_world_saves "$1" "$2" | tr '\n' ' ')" = "$3" ]; }
+expect "saves: only the complete generation is listed" 0 saves_are "$listing" Multi "4 "
+expect "saves: mismatched generations list nothing" 0 saves_are "$listing" Mismatch ""
+expect "saves: the live Jotunheim pair" 0 saves_are "$listing" Jotunheim "407 "
 
 layout_is() { [ "$(archive_world_layout "$1" "$2")" = "$3" ]; }
 expect "layout: legacy" 0 layout_is "$listing" Legacy legacy
 expect "layout: chunked" 0 layout_is "$listing" Jotunheim chunked
 expect "layout: absent" 0 layout_is "$listing" Helheim absent
+expect "layout: a directory with no complete pair still reads as chunked" 0 layout_is "$listing" Mismatch chunked
 
 echo
 echo "Summary: ${pass} passed, ${fail} failed"
