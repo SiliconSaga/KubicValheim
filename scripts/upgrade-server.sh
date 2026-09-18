@@ -117,8 +117,9 @@ fi
 
 # Hand the wait-and-verify to wake-server.sh instead of repeating it. The
 # deployment is already at >=1 replica here, so wake skips its scale, waits for
-# Ready, and asserts the configured world's .db and .fwl are present and
-# non-empty — the same check, maintained in one place.
+# Ready, and asserts the configured world is present and non-empty in whichever
+# layout it is stored (scripts/lib/world-files.sh) — the same check, maintained
+# in one place.
 #
 # EXIT 2 IS THE SUCCESS CASE, not a surprise. wake reserves 2 for "it was
 # already awake AND its world verified", which after a restart is precisely what

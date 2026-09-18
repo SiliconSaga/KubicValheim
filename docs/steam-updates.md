@@ -118,7 +118,7 @@ The game volume is disposable by design — it carries `backup.siliconsaga.org/c
 
 5. **Delete the rescue pod, then bring the server back with `scripts/wake-server.sh <slug> [namespace]`.** The pod must go first: `valheim-game` is `ReadWriteOnce`, so the server cannot start while the rescue pod still holds it.
 
-   Use the script rather than `kubectl scale`. A bare scale-up only sets the replica count, which is precisely the check this situation needs and does not have — the game volume was just rewritten, and a server that comes up on a fresh empty world looks identical from the outside to one that came back correctly. `wake-server.sh` waits for Ready and then asserts the configured world's `.db` and `.fwl` are present and non-empty before calling it done.
+   Use the script rather than `kubectl scale`. A bare scale-up only sets the replica count, which is precisely the check this situation needs and does not have — the game volume was just rewritten, and a server that comes up on a fresh empty world looks identical from the outside to one that came back correctly. `wake-server.sh` waits for Ready and then asserts the configured world is present and non-empty, in either the legacy `.db` + `.fwl` pair or the Valheim 1.0 directory (see [world-identity.md](world-identity.md)), before calling it done.
 
 On boot odin logs `Current build: <new>` followed by `No change in build version`, and the server console banner names the version it is actually running — worth reading, because it is the only line that reports the version players will be matched against.
 

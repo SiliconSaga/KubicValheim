@@ -61,6 +61,12 @@ else
 fi
 echo "Targeting kubectl context: ${KUBE_CONTEXT}"
 
+# One definition of "the world is there" for the archive listing, the extracted
+# tree and the rollback copy — legacy .db/.fwl pair or the Valheim 1.0 directory.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/world-files.sh
+. "$script_dir/lib/world-files.sh"
+
 slug="${1:?usage: restore-server.sh <slug> <namespace> <world> <archive>}"
 ns="${2:?usage: restore-server.sh <slug> <namespace> <world> <archive>}"
 world="${3:?usage: restore-server.sh <slug> <namespace> <world> <archive>}"
@@ -120,8 +126,9 @@ esac
 # impossible — it optimised against a narrow mix-up and blocked the feature.
 #
 # What still protects a live world, and is enough:
-#   - the archive must CONTAIN worlds_local/<world>.db and .fwl (step 4), so a
-#     restore cannot quietly replace a world with an unrelated one;
+#   - the archive must CONTAIN world <world> — the .db + .fwl pair or the 1.0
+#     <world>/ directory (step 4) — so a restore cannot quietly replace a world
+#     with an unrelated one;
 #   - the live Deployment must already be running <world> (step 4b), so the
 #     target has to be the instance you named;
 #   - KUBE_CONTEXT must be explicit, so it is the cluster you named;
@@ -257,18 +264,18 @@ cleanup() {
   # VERIFY before restarting. Restoring replicas is only safe once the world is
   # actually back; doing it unconditionally converts a failed restore into a
   # silently-new world, which is worse than staying down.
-  if kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.db" >/dev/null 2>&1; then
+  if kctl exec "$helper" -n "$ns" -- sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local "$world" >/dev/null 2>&1; then
     kctl delete pod "$helper" -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     if [ -n "$prev_replicas" ]; then
       kctl scale deployment valheim -n "$ns" --replicas="$prev_replicas" >/dev/null 2>&1 || true
-      echo "  ROLLED BACK: ${world}.db verified in place, replicas restored to ${prev_replicas}." >&2
+      echo "  ROLLED BACK: world '${world}' verified in place, replicas restored to ${prev_replicas}." >&2
       echo "  The world on the PVC is the one you started with. Re-run once the cause is understood." >&2
     fi
   else
     # Deliberately leave the Deployment at zero and the helper alive. A stopped
     # server is loud and recoverable; a running server on a missing world starts
     # generating a new one and overwrites the evidence.
-    echo "  ROLLBACK INCOMPLETE — ${world}.db is NOT in place." >&2
+    echo "  ROLLBACK INCOMPLETE — world '${world}' is NOT in place." >&2
     echo "  Deployment deliberately LEFT AT 0 REPLICAS so Valheim cannot start and generate a new world." >&2
     echo "  The helper pod '${helper}' has been left running with the PVC mounted; inspect it:" >&2
     echo "    kubectl --context ${KUBE_CONTEXT} exec ${helper} -n ${ns} -- ls -la /world /world/worlds_local /world/worlds_local.rollback" >&2
@@ -322,29 +329,17 @@ sed 's#^\./##' "$listing_raw" > "$listing_norm"
 # What worlds does this archive actually hold? Reported unconditionally, because
 # "does not contain X" is a far less useful error than "does not contain X, it
 # contains Y" — the second tells you either that you grabbed the wrong file or
-# that the world you want is named something else. Excludes Valheim's own
-# rotations (.db.old) and odin's timestamped autobackup copies, which are the
-# same world under decorated names and would otherwise pad the list.
-# awk, not `grep -v`: grep exits 1 when it selects nothing, and under
-# `set -euo pipefail` that aborts here — so an archive containing no live worlds
-# would kill the script instead of reaching the "found: no worlds at all" error
-# below, which is precisely the message that case needs. awk exits 0 on empty.
-# Matches the TIMESTAMP, not the word "backup". Valheim writes point-in-time
-# copies in two forms, both ending in digits:
-#     <World>_backup_auto-20260815120940     (odin's schedule)
-#     <World>_backup_20260206-235715         (manual / version upgrade)
-# Matching only the first made a real legacy archive report three worlds where it
-# held one; matching a bare `_backup_` substring would instead hide a world
-# someone legitimately called `World_backup_legacy`, which create-server.sh's
-# allowlist permits. Anchoring on trailing digits catches exactly the copies.
-archive_worlds="$(sed -n 's#^worlds_local/\([^/]*\)\.db$#\1#p' "$listing_norm" \
-  | awk '!(/_backup_auto-[0-9]+$/ || /_backup_[0-9]+-[0-9]+$/)' | sort -u | tr '\n' ' ')"
+# that the world you want is named something else. archive_live_world_names
+# reads both layouts (the .db pair and the 1.0 <World>/ directory) and leaves
+# out Valheim's own point-in-time copies, which are the same world under
+# decorated names and would otherwise pad the list — the rules and the reasons
+# are in lib/world-files.sh, next to the tests that pin them.
+archive_worlds="$(archive_live_world_names "$listing_norm" | tr '\n' ' ')"
 echo "Worlds present in archive: ${archive_worlds:-(none)}"
 
-if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm" \
-   || ! grep -Fqx -- "worlds_local/${world}.fwl" "$listing_norm"; then
+if ! archive_has_world "$listing_norm" "$world"; then
   echo "ERROR: this archive does not contain world '${world}'." >&2
-  echo "  wanted: worlds_local/${world}.db and worlds_local/${world}.fwl" >&2
+  echo "  wanted: worlds_local/${world}.db + .fwl, or worlds_local/${world}/_main.<N>.fwl2 + .db2" >&2
   echo "  found:  ${archive_worlds:-no worlds at all}" >&2
   echo "  NOT touching the live world." >&2
   echo "" >&2
@@ -355,7 +350,7 @@ if ! grep -Fqx -- "worlds_local/${world}.db" "$listing_norm" \
   echo "  in the instance's overlay, apply it, let the pod restart, then re-run this." >&2
   exit 1
 fi
-echo "World match confirmed: worlds_local/${world}.db and .fwl both present in archive"
+echo "World match confirmed: '${world}' present in archive ($(archive_world_layout "$listing_norm" "$world") layout)"
 
 # --- 4b. Confirm the LIVE instance is the one we think it is ---------------
 # Everything above validated the ARCHIVE. Nothing yet has checked that the
@@ -504,16 +499,16 @@ esac
 kctl exec "$helper" -n "$ns" -- tar xzf /tmp/restore.tar.gz -C /world
 
 # Extraction reporting success is still not proof the world is usable: verify
-# the two files Valheim actually needs are present and non-empty. Without this
-# a truncated-but-exit-0 extract would be swapped in and the rollback deleted.
+# the files Valheim actually needs are present and non-empty, in whichever
+# layout the archive carried. Without this a truncated-but-exit-0 extract would
+# be swapped in and the rollback deleted.
 #
-# The path is a POSITIONAL PARAMETER to the remote `sh`, never spliced into the
-# command string: a world named "Odin's Realm" would otherwise close the quoting
-# and fail with a syntax error, which under `set -e` aborts the restore at the
-# exact moment the rollback copy is about to be discarded.
-kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.db"
-kctl exec "$helper" -n "$ns" -- sh -c 'test -s "$1"' sh "/world/worlds_local/${world}.fwl"
-echo "Extracted world verified: ${world}.db and ${world}.fwl both present and non-empty"
+# The path and name are POSITIONAL PARAMETERS to the remote `sh`, never spliced
+# into the command string: a world named "Odin's Realm" would otherwise close
+# the quoting and fail with a syntax error, which under `set -e` aborts the
+# restore at the exact moment the rollback copy is about to be discarded.
+kctl exec "$helper" -n "$ns" -- sh -c "$WORLD_PRESENT_SH" sh /world/worlds_local "$world"
+echo "Extracted world verified: '${world}' present and non-empty"
 
 # Only now is the old copy expendable — and only if there was one.
 if [ "$staged" -eq 1 ]; then
@@ -542,11 +537,12 @@ Restore submitted. Verify it actually took:
 
   kubectl --context ${KUBE_CONTEXT} logs deployment/valheim -n ${ns} --tail=50
 
-The log should show:  Load world: ${world}
-with NO following:    ... missing .../${world}.db ...
-That "missing" line means Valheim generated a brand-new empty world instead of
-loading the restored one — if you see it, the restore did not take.
+Valheim 1.0 logs "Get create world ${world}" whether it LOADED the restored
+world or CREATED a fresh one, so the log alone no longer proves anything (before
+1.0 a "missing .../${world}.db" line gave the fresh world away). The file check
+above is the mechanical proof; a legacy archive is converted to the 1.0 directory
+on this boot, which is expected.
 
 Then join the server and confirm a known object placed before the backup is
-actually there.
+actually there — that is the check that cannot be fooled.
 EOF
